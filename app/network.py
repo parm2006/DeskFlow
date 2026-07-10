@@ -111,6 +111,7 @@ class NetworkServer(NetworkNode):
         try:
             while True:
                 conn, addr = self.server_sock.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 logger.info(f"Client connected from {addr}")
                 # For phase 1, only handle one client at a time
                 if self.connected:
@@ -138,6 +139,7 @@ class NetworkClient(NetworkNode):
     def connect(self, host, port=5000):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock.connect((host, port))
             self.connected = True
             self.trigger_callbacks('connected', {'host': host, 'port': port})
