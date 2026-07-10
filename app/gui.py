@@ -175,6 +175,13 @@ class DeskFlowGUI(ctk.CTk):
         self.server.on_mouse_scroll(0, dy)
 
 def run_gui():
+    import ctypes
+    try:
+        # PROCESS_PER_MONITOR_DPI_AWARE ensures winfo_screenheight matches pynput physical pixels
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
+        
     ctk.set_appearance_mode("dark")
     app = DeskFlowGUI()
     app.mainloop()
