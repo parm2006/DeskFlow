@@ -128,7 +128,6 @@ DeskFlow/
 ### Backlog / Known Bugs
 - [x] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
 - [x] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
-- [x] Rich Clipboard Support: Currently, clipboard synchronization only supports plaintext strings. Investigate OS-native APIs to support copying and pasting formatted text (RTF) and raw image data across the network.
 
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
@@ -138,3 +137,11 @@ DeskFlow/
 - [x] Introduce visual 3x3 layout selector in the GUI to place Client (Top, Bottom, Left, Right).
 - [x] Update edge detection logic to dynamically respect the selected layout boundary.
 - [x] Perform network handshake to configure the Client's return-edge automatically based on its relative position.
+
+### Phase 7 — Dual-Socket Architecture (Control & Data)
+- [x] Refactor network stack to spin up a secondary data port (+1) automatically.
+- [x] Route latency-critical HID inputs (mouse/keyboard) through the primary Control Socket.
+- [x] Route bulky payloads (Clipboard, File streams) through the background Data Socket to prevent mouse freezing.
+
+### Phase 8 — Rich Clipboard Support
+- [x] Replaced `pyperclip` with native OS APIs (`pywin32`) to sync uncompressed images via heavily optimized `Pillow` background byte streams.
