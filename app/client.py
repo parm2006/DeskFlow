@@ -66,5 +66,3 @@ class DeskFlowClient:
                 'type': 'switch_back',
                 'y_ratio': y_ratio
             })
-            # Prevent infinite loop: move cursor slightly right so it doesn't immediately re-trigger
-            self.input_handler.inject_position(50, int(y_ratio * self.input_handler.screen_height))
