@@ -52,6 +52,7 @@ DeskFlow is a lightweight, wireless KVM utility written in Python. It allows two
 * **Language**: Python 3.10+
 * **Input Hooking & Injection**: `pynput` (cross-platform support for Windows, macOS, and Linux).
 * **Network Protocol**: TCP sockets (`socket` and `selectors`/`asyncio` for non-blocking networking).
+* **Security & Encryption**: Python's native `ssl` library for TLS and the `cryptography` package for auto-generating RSA certificates.
 * **Clipboard**: `pyperclip` or native OS APIs.
 * **GUI / Settings Wrapper**: `customtkinter` (modern, dark-themed UI for starting server/client and entering IP addresses).
 
