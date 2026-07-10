@@ -103,3 +103,4 @@ DeskFlow/
 
 ### Backlog / Known Bugs
 * App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
+* Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
