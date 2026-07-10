@@ -131,3 +131,4 @@ DeskFlow/
 
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
+- [x] Disconnect Buttons & Dynamic UI Status: Add red Stop/Disconnect buttons to the GUI that dynamically appear upon connection and gracefully reset the UI across both computers when the socket is closed or drops.

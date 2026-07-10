@@ -47,6 +47,7 @@ class DeskFlowGUI(ctk.CTk):
         
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
         self.server_start_btn.pack(pady=10)
+        self.server_stop_btn = ctk.CTkButton(self.tab_server, text="Stop Server", fg_color="red", hover_color="darkred", command=self.stop_server)
         
         # Client UI
         self.client_ip_label = ctk.CTkLabel(self.tab_client, text="Server IP:")
@@ -73,6 +74,7 @@ class DeskFlowGUI(ctk.CTk):
         
         self.client_connect_btn = ctk.CTkButton(self.tab_client, text="Connect", command=self.connect_client)
         self.client_connect_btn.pack(pady=10)
+        self.client_disconnect_btn = ctk.CTkButton(self.tab_client, text="Disconnect", fg_color="red", hover_color="darkred", command=self.disconnect_client)
         
         self.status_label = ctk.CTkLabel(self, text="Status: Idle", text_color="gray")
         self.status_label.grid(row=1, column=0, padx=20, pady=10)
@@ -117,12 +119,16 @@ class DeskFlowGUI(ctk.CTk):
             self.server.stop()
             
         self.server = DeskFlowServer(password=password, port=port, on_capture_start=self.show_overlay, on_capture_stop=self.hide_overlay)
+        self.server.network.register_callback('connected', self._on_server_client_connected)
+        self.server.network.register_callback('disconnected', self._on_server_client_disconnected)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
         
         if self.server.start():
             self.status_label.configure(text=f"Status: Server Listening on port {port}", text_color="green")
+            self.server_start_btn.pack_forget()
+            self.server_stop_btn.pack(pady=10)
         else:
             self.status_label.configure(text="Status: Failed to start server", text_color="red")
 
@@ -153,8 +159,38 @@ class DeskFlowGUI(ctk.CTk):
         if success:
             self.status_label.configure(text=f"Status: Connected to {ip}:{port}", text_color="green")
             self.save_known_host(ip, port)
+            self.client_connect_btn.pack_forget()
+            self.client_disconnect_btn.pack(pady=10)
+            self.client.network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
             self.status_label.configure(text=f"Status: Connection failed ({error_msg})", text_color="red")
+
+    def stop_server(self):
+        if self.server:
+            self.server.stop()
+            self.server = None
+        self.server_stop_btn.pack_forget()
+        self.server_start_btn.pack(pady=10)
+        self.status_label.configure(text="Status: Server stopped", text_color="gray")
+
+    def disconnect_client(self):
+        if self.client:
+            self.client.disconnect()
+            self.client = None
+        self.client_disconnect_btn.pack_forget()
+        self.client_connect_btn.pack(pady=10)
+        self.status_label.configure(text="Status: Disconnected", text_color="gray")
+
+    def _on_server_client_connected(self, data):
+        self.after(0, lambda: self.status_label.configure(text="Status: Client Connected!", text_color="green"))
+        
+    def _on_server_client_disconnected(self, data):
+        if self.server:
+            port = self.server_port_entry.get()
+            self.after(0, lambda: self.status_label.configure(text=f"Status: Server Listening on port {port}", text_color="green"))
+
+    def _on_client_disconnected_event(self, data):
+        self.after(0, self.disconnect_client)
 
     def on_close(self):
         self.hide_overlay()
