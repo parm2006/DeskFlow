@@ -15,9 +15,14 @@ class DeskFlowClient:
         self.network.register_callback('mouse_move', self.on_mouse_move)
         self.network.register_callback('mouse_click', self.on_mouse_click)
         self.network.register_callback('mouse_scroll', self.on_mouse_scroll)
+        self.network.register_callback('disconnected', self.on_disconnected)
         
         # Setup input callbacks
         self.input_handler.register_callback('client_edge_hit', self.on_client_edge_hit)
+
+    def on_disconnected(self, data):
+        logger.info("Disconnected from Server.")
+        self.is_active = False
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)

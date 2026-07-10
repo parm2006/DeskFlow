@@ -38,6 +38,8 @@ class DeskFlowServer:
 
     def on_client_disconnected(self, data):
         logger.info("Client disconnected, stopping edge detection.")
+        if self.on_capture_stop:
+            self.on_capture_stop()
         self.input_handler.stop()
 
     def on_edge_hit(self, direction, y_ratio):
