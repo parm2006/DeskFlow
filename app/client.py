@@ -22,8 +22,8 @@ class DeskFlowClient:
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
 
-    def connect(self, host, port=5000):
-        return self.network.connect(host, port)
+    def connect(self, host, port, callback):
+        self.network.connect(host, port, callback)
 
     def disconnect(self):
         self.network.disconnect()

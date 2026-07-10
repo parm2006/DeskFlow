@@ -180,37 +180,46 @@ class NetworkClient(NetworkNode):
         self.is_server = False
         self.password = password
 
-    def connect(self, host, port=5000):
-        try:
-            self.host = host
-            raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            raw_sock.connect((host, port))
-            
-            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            
-            self.sock = ssl_context.wrap_socket(raw_sock, server_hostname=host)
-            self.connected = True
-            self.authenticated = False
-            
-            self.receive_thread = threading.Thread(target=self._receive_loop, args=(self.sock,), daemon=True)
-            self.receive_thread.start()
-            
-            # Send auth packet
-            self.send_message({'type': 'auth', 'password': self.password})
-            
-            # Wait for auth response (timeout after 2s)
-            start_time = time.time()
-            while not self.authenticated and self.connected:
-                if time.time() - start_time > 2.0:
-                    logger.error("Authentication timed out")
-                    self.disconnect()
-                    return False
-                time.sleep(0.1)
+    def connect(self, host, port, callback):
+        def _connect_thread():
+            try:
+                self.host = host
+                raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                raw_sock.settimeout(3.0) # 3 second timeout for IP unreachable
+                raw_sock.connect((host, port))
+                raw_sock.settimeout(None) # Restore blocking mode for SSL
                 
-            return self.authenticated
-        except Exception as e:
-            logger.error(f"Failed to connect to {host}:{port}: {e}")
-            return False
+                ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                
+                self.sock = ssl_context.wrap_socket(raw_sock, server_hostname=host)
+                self.connected = True
+                self.authenticated = False
+                
+                self.receive_thread = threading.Thread(target=self._receive_loop, args=(self.sock,), daemon=True)
+                self.receive_thread.start()
+                
+                # Send auth packet
+                self.send_message({'type': 'auth', 'password': self.password})
+                
+                # Wait for auth response (timeout after 2s)
+                start_time = time.time()
+                while not self.authenticated and self.connected:
+                    if time.time() - start_time > 2.0:
+                        logger.error("Authentication timed out")
+                        self.disconnect()
+                        if callback: callback(False, "Authentication timed out")
+                        return
+                    time.sleep(0.1)
+                    
+                if self.authenticated:
+                    if callback: callback(True, None)
+                else:
+                    if callback: callback(False, "Connection disconnected during auth")
+            except Exception as e:
+                logger.error(f"Failed to connect to {host}:{port}: {e}")
+                if callback: callback(False, str(e))
+                
+        threading.Thread(target=_connect_thread, daemon=True).start()
