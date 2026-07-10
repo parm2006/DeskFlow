@@ -115,6 +115,10 @@ class DeskFlowGUI(ctk.CTk):
     def start_server(self):
         port = int(self.server_port_entry.get())
         password = self.server_password_entry.get()
+        
+        if not password:
+            self.status_label.configure(text="Status: Error - Password required", text_color="red")
+            return
         if self.server:
             self.server.stop()
             
@@ -136,6 +140,10 @@ class DeskFlowGUI(ctk.CTk):
         ip = self.client_ip_entry.get()
         port = int(self.client_port_entry.get())
         password = self.client_password_entry.get()
+        
+        if not password:
+            self.status_label.configure(text="Status: Error - Password required", text_color="red")
+            return
         
         if self.client:
             self.client.disconnect()
