@@ -7,20 +7,26 @@ logger = logging.getLogger(__name__)
 
 class DeskFlowClient:
     def __init__(self, password):
-        self.network = NetworkClient(password)
+        self.control_network = NetworkClient(password)
+        self.data_network = NetworkClient(password)
         self.input_handler = InputHandler()
         self.is_active = False
+        self.control_connected = False
+        self.data_connected = False
         
-        # Setup network callbacks
-        self.network.register_callback('layout_config', self.on_layout_config)
-        self.network.register_callback('switch', self.on_switch)
-        self.network.register_callback('mouse_move', self.on_mouse_move)
-        self.network.register_callback('mouse_click', self.on_mouse_click)
-        self.network.register_callback('mouse_scroll', self.on_mouse_scroll)
-        self.network.register_callback('key_press', self.on_key_press)
-        self.network.register_callback('key_release', self.on_key_release)
-        self.network.register_callback('disconnected', self.on_disconnected)
-        self.network.register_callback('clipboard_sync', self.on_remote_copy)
+        # Setup control network callbacks
+        self.control_network.register_callback('layout_config', self.on_layout_config)
+        self.control_network.register_callback('switch', self.on_switch)
+        self.control_network.register_callback('mouse_move', self.on_mouse_move)
+        self.control_network.register_callback('mouse_click', self.on_mouse_click)
+        self.control_network.register_callback('mouse_scroll', self.on_mouse_scroll)
+        self.control_network.register_callback('key_press', self.on_key_press)
+        self.control_network.register_callback('key_release', self.on_key_release)
+        self.control_network.register_callback('disconnected', self.on_disconnected)
+        
+        # Setup data network callbacks
+        self.data_network.register_callback('clipboard_sync', self.on_remote_copy)
+        self.data_network.register_callback('disconnected', self.on_disconnected)
         
         # Setup input callbacks
         self.input_handler.register_callback('client_edge_hit', self.on_client_edge_hit)
@@ -37,15 +43,42 @@ class DeskFlowClient:
         self.input_handler.set_screen_size(w, h)
 
     def connect(self, host, port, callback):
-        def _connect_callback(success, err):
-            if success:
+        self.control_connected = False
+        self.data_connected = False
+        self.connect_error = None
+        
+        def _check_both_connected():
+            if self.connect_error:
+                return # Already errored out
+            if self.control_connected and self.data_connected:
                 self.clipboard.start()
-            if callback:
-                callback(success, err)
-        self.network.connect(host, port, _connect_callback)
+                if callback: callback(True, None)
+
+        def _control_callback(success, err):
+            if success:
+                self.control_connected = True
+                _check_both_connected()
+            else:
+                self.connect_error = err
+                self.disconnect()
+                if callback: callback(False, f"Control Socket Error: {err}")
+
+        def _data_callback(success, err):
+            if success:
+                self.data_connected = True
+                _check_both_connected()
+            else:
+                self.connect_error = err
+                self.disconnect()
+                if callback and not self.control_connected: # Avoid double callback if both fail
+                    callback(False, f"Data Socket Error: {err}")
+
+        self.control_network.connect(host, port, _control_callback)
+        self.data_network.connect(host, port + 1, _data_callback)
 
     def disconnect(self):
-        self.network.disconnect()
+        self.control_network.disconnect()
+        self.data_network.disconnect()
 
     def on_layout_config(self, data):
         server_pos = data.get('position', 'right')
@@ -113,13 +146,13 @@ class DeskFlowClient:
         if direction == self.input_handler.client_edge:
             logger.info(f"Hit {direction} edge. Sending switch_back to server.")
             self.is_active = False
-            self.network.send_message({
+            self.control_network.send_message({
                 'type': 'switch_back',
                 'ratio': ratio
             })
 
     def on_local_copy(self, text):
-        self.network.send_message({
+        self.data_network.send_message({
             'type': 'clipboard_sync',
             'text': text
         })
