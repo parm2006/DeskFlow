@@ -6,11 +6,14 @@
 * **Edge Detection Transition**: Moving the mouse to the right edge of the Server screen instantly captures the cursor and transitions it to the Client screen, completely wirelessly.
 * **Scroll & Click Forwarding**: All mouse scroll events and Left/Right/Middle clicks are faithfully reproduced on the Client machine.
 
-
+### Keyboard Redirection (v2.0s)
+* **Global Keyboard Hooking**: Captures all keyboard input on the Server when the Client is active.
+* **Low-Latency Streaming**: Broadcasts and simulates all keystrokes (including modifier combinations like Ctrl, Alt, Shift, Win/Cmd) on the Client.
+* **Strict OS-Level Suppression**: Ensures keystrokes are completely suppressed on the Server side while the Client is active, guaranteeing you don't accidentally type passwords on the host screen.
 
 ### End-to-End Security
 * **Auto-Generated TLS Certificates**: DeskFlow dynamically generates local self-signed RSA certificates to lock down the connection without requiring complex configuration.
-* **SSL Socket Encryption**: All mouse movements and data are scrambled over a secure TLS layer, preventing anyone on the local Wi-Fi from reading coordinates.
+* **SSL Socket Encryption**: All mouse movements, keystrokes, and data are scrambled over a secure TLS layer, preventing anyone on the local Wi-Fi from reading inputs.
 * **Password Authentication**: A handshake blocks rogue computers from hooking into the Host. If the passwords do not exactly match, the Server forcefully aborts the connection.
 
 ### Quality of Life UI
@@ -23,11 +26,6 @@
 ---
 
 ## Planned Features
-
-### Keyboard Redirection (Coming Soon)
-* Global keyboard hooking.
-* Broadcasting and simulating all keystrokes (including modifier combinations) on the Client.
-* Strict host-side suppression to ensure keystrokes aren't accidentally typed on the Server while the Client is active.
 
 ### Clipboard Synchronization (Coming Soon)
 * Background listeners that watch the OS clipboard.

@@ -95,10 +95,6 @@ DeskFlow/
 - [x] Wrap raw TCP sockets in Python `ssl` module for TLS End-to-End Encryption.
 - [x] Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
 
-
-### Phase 1.9 -- Add relevant Tests for a CICD workflows
-- [ ] Add relevant Tests for a CICD workflows
-
 ### Phase 2 — Keyboard Redirection
 - [ ] Capture keyboard inputs on Server when Client is active.
 - [ ] Stream and inject keystrokes onto Client.
