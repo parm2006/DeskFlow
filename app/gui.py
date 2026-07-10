@@ -14,7 +14,8 @@ class DeskFlowGUI(ctk.CTk):
         super().__init__()
         
         self.title("DeskFlow")
-        self.geometry("400x450")
+        self.geometry("310x410")
+        self.resizable(False, False)
         
         self.server = None
         self.client = None
