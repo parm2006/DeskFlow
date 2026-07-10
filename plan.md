@@ -65,6 +65,7 @@ DeskFlow/
 ├── features.md          # Comprehensive list of DeskFlow features
 ├── plan.md              # Project roadmap and architecture
 ├── requirements.txt     # Python dependency file
+├── run.bat              # Windows startup script
 ├── run.py               # Main entry point (starts GUI)
 ├── app/
 │   ├── __init__.py
