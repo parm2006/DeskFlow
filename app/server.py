@@ -5,9 +5,11 @@ from app.input_handler import InputHandler
 logger = logging.getLogger(__name__)
 
 class DeskFlowServer:
-    def __init__(self, host='0.0.0.0', port=5000):
-        self.network = NetworkServer(host, port)
+    def __init__(self, port=5000, on_capture_start=None, on_capture_stop=None):
+        self.network = NetworkServer('0.0.0.0', port)
         self.input_handler = InputHandler()
+        self.on_capture_start = on_capture_start
+        self.on_capture_stop = on_capture_stop
         
         # Setup network callbacks
         self.network.register_callback('connected', self.on_client_connected)
@@ -46,17 +48,22 @@ class DeskFlowServer:
                 'direction': 'right',
                 'y': y
             })
-            self.input_handler.start_capture()
+            self.input_handler.stop() # Stop edge detection
+            if self.on_capture_start:
+                self.on_capture_start()
         elif direction == 'left':
             logger.info("Left edge hit while capturing. Switching back to server.")
+            if self.on_capture_stop:
+                self.on_capture_stop()
             self.input_handler.start_edge_detection()
-            # Position cursor back at the right edge
             self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
 
     def on_switch_back(self, data):
         # Client hit its left edge
         logger.info("Client signaled switch back.")
         y = data.get('y', self.input_handler.screen_height // 2)
+        if self.on_capture_stop:
+            self.on_capture_stop()
         self.input_handler.start_edge_detection()
         self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
 

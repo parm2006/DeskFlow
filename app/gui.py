@@ -14,6 +14,9 @@ class DeskFlowGUI(ctk.CTk):
         
         self.server = None
         self.client = None
+        self.overlay = None
+        self.overlay_center_x = self.winfo_screenwidth() // 2
+        self.overlay_center_y = self.winfo_screenheight() // 2
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
@@ -61,7 +64,7 @@ class DeskFlowGUI(ctk.CTk):
         if self.server:
             self.server.stop()
             
-        self.server = DeskFlowServer(port=port)
+        self.server = DeskFlowServer(port=port, on_capture_start=self.show_overlay, on_capture_stop=self.hide_overlay)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
@@ -89,11 +92,81 @@ class DeskFlowGUI(ctk.CTk):
             self.status_label.configure(text="Status: Connection failed", text_color="red")
 
     def on_close(self):
+        self.hide_overlay()
         if self.server:
             self.server.stop()
         if self.client:
             self.client.disconnect()
         self.destroy()
+
+    def show_overlay(self):
+        if self.overlay is None:
+            self.overlay = ctk.CTkToplevel(self)
+            self.overlay.attributes("-fullscreen", True)
+            self.overlay.attributes("-alpha", 0.01) # Almost invisible
+            self.overlay.config(cursor="none") # Hide host cursor
+            
+            # Ensure it stays on top
+            self.overlay.attributes("-topmost", True)
+            
+            # Bind events
+            self.overlay.bind("<Motion>", self.on_overlay_motion)
+            self.overlay.bind("<ButtonPress>", self.on_overlay_press)
+            self.overlay.bind("<ButtonRelease>", self.on_overlay_release)
+            self.overlay.bind("<MouseWheel>", self.on_overlay_scroll)
+            
+            # Force focus so it receives inputs
+            self.overlay.focus_force()
+            self.overlay.grab_set()
+            
+            # Initial position
+            self.last_x = self.overlay_center_x
+            self.last_y = self.overlay_center_y
+            self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+
+    def hide_overlay(self):
+        if self.overlay:
+            self.overlay.grab_release()
+            self.overlay.destroy()
+            self.overlay = None
+
+    def on_overlay_motion(self, event):
+        dx = event.x - self.last_x
+        dy = event.y - self.last_y
+        
+        if dx != 0 or dy != 0:
+            if self.server:
+                self.server.on_mouse_move(dx, dy)
+                
+            # If we get too close to the edges of the overlay, re-center the mouse 
+            # to prevent it from ever escaping the transparent window.
+            if abs(event.x - self.overlay_center_x) > 200 or abs(event.y - self.overlay_center_y) > 200:
+                self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+                self.last_x = self.overlay_center_x
+                self.last_y = self.overlay_center_y
+            else:
+                self.last_x = event.x
+                self.last_y = event.y
+
+    def on_overlay_press(self, event):
+        if not self.server: return
+        button_map = {1: 'left', 2: 'middle', 3: 'right'}
+        btn = button_map.get(event.num)
+        if btn:
+            self.server.on_mouse_click(btn, True)
+
+    def on_overlay_release(self, event):
+        if not self.server: return
+        button_map = {1: 'left', 2: 'middle', 3: 'right'}
+        btn = button_map.get(event.num)
+        if btn:
+            self.server.on_mouse_click(btn, False)
+
+    def on_overlay_scroll(self, event):
+        if not self.server: return
+        # Windows Tkinter reports scroll in event.delta (usually multiples of 120)
+        dy = 1 if event.delta > 0 else -1
+        self.server.on_mouse_scroll(0, dy)
 
 def run_gui():
     ctk.set_appearance_mode("dark")
