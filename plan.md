@@ -96,13 +96,13 @@ DeskFlow/
 - [x] Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
 
 ### Phase 2 — Keyboard Redirection
-- [ ] Capture keyboard inputs on Server when Client is active.
-- [ ] Stream and inject keystrokes onto Client.
-- [ ] Handle system/modifier keys (Ctrl, Alt, Shift, Win/Cmd).
+- [x] Capture keyboard inputs on Server when Client is active.
+- [x] Stream and inject keystrokes onto Client.
+- [x] Handle system/modifier keys (Ctrl, Alt, Shift, Win/Cmd).
 
 ### Phase 2.5 — Keyboard Security
-- [ ] Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
-- [ ] Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
+- [x] Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
+- [x] Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
 
 ### Phase 3 — Plaintext Clipboard Sync
 - [x] Watch clipboard contents for changes using `pyperclip`.
@@ -133,3 +133,8 @@ DeskFlow/
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
 - [x] Disconnect Buttons & Dynamic UI Status: Add red Stop/Disconnect buttons to the GUI that dynamically appear upon connection and gracefully reset the UI across both computers when the socket is closed or drops.
+
+### Phase 6 — Spatial Layout Configuration
+- [x] Introduce visual 3x3 layout selector in the GUI to place Client (Top, Bottom, Left, Right).
+- [x] Update edge detection logic to dynamically respect the selected layout boundary.
+- [x] Perform network handshake to configure the Client's return-edge automatically based on its relative position.
