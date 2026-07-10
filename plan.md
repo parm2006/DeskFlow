@@ -96,7 +96,7 @@ DeskFlow/
 * Implement background file transfer server.
 * Capture file references on drag start and transmit files to client's temporary cache directory.
 
-### Phase 5 - Multi-Monitor Scaling and Resolution Sync
+### Phase 5 - Multi-Monitor Scaling and Resolution Sync (COMPLETED)
 * Handle physical monitor size disparities (e.g. 32-inch vs 13-inch).
 * Currently uses relative y_ratio, but physical movement distances can feel disconnected.
 * Implement absolute or configured pixel mapping instead of strict relative ratios to fix offset entry points on different sized screens.
