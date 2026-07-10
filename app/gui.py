@@ -262,6 +262,7 @@ class DeskFlowGUI(ctk.CTk):
         self.overlay.bind("<ButtonPress>", self.on_overlay_press)
         self.overlay.bind("<ButtonRelease>", self.on_overlay_release)
         self.overlay.bind("<MouseWheel>", self.on_overlay_scroll)
+        self.overlay.bind("<FocusOut>", self.on_overlay_focus_out)
         
         self.overlay.withdraw() # Hide it initially
         self.last_x = self.overlay_center_x
@@ -324,6 +325,13 @@ class DeskFlowGUI(ctk.CTk):
         # Windows Tkinter reports scroll in event.delta (usually multiples of 120)
         dy = 1 if event.delta > 0 else -1
         self.server.on_mouse_scroll(0, dy)
+
+    def on_overlay_focus_out(self, event):
+        # If the user opens the Snipping Tool (Win+Shift+S) or Alt-Tabs natively,
+        # the overlay loses focus. We MUST return the cursor to the Server automatically.
+        if self.server and self.server.control_connected:
+            logger.info("Overlay lost focus (e.g. Snipping Tool). Switching back to Server.")
+            self.server.on_switch_back({'ratio': 0.5})
 
 def run_gui():
     import ctypes
