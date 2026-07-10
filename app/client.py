@@ -1,0 +1,60 @@
+import logging
+from app.network import NetworkClient
+from app.input_handler import InputHandler
+
+logger = logging.getLogger(__name__)
+
+class DeskFlowClient:
+    def __init__(self):
+        self.network = NetworkClient()
+        self.input_handler = InputHandler()
+        
+        # Setup network callbacks
+        self.network.register_callback('switch', self.on_switch)
+        self.network.register_callback('mouse_move', self.on_mouse_move)
+        self.network.register_callback('mouse_click', self.on_mouse_click)
+        self.network.register_callback('mouse_scroll', self.on_mouse_scroll)
+        
+        # Setup input callbacks
+        self.input_handler.register_callback('client_edge_hit', self.on_client_edge_hit)
+
+    def set_screen_size(self, w, h):
+        self.input_handler.set_screen_size(w, h)
+
+    def connect(self, host, port=5000):
+        return self.network.connect(host, port)
+
+    def disconnect(self):
+        self.network.disconnect()
+
+    def on_switch(self, data):
+        logger.info("Server switched control to this client.")
+        direction = data.get('direction')
+        y = data.get('y', self.input_handler.screen_height // 2)
+        
+        if direction == 'right':
+            # Cursor came from the right edge of the server, so it enters on the left edge of the client
+            self.input_handler.inject_position(10, y)
+
+    def on_mouse_move(self, data):
+        dx = data.get('dx', 0)
+        dy = data.get('dy', 0)
+        self.input_handler.inject_move(dx, dy)
+
+    def on_mouse_click(self, data):
+        button_name = data.get('button')
+        pressed = data.get('pressed')
+        self.input_handler.inject_click(button_name, pressed)
+
+    def on_mouse_scroll(self, data):
+        dx = data.get('dx', 0)
+        dy = data.get('dy', 0)
+        self.input_handler.inject_scroll(dx, dy)
+
+    def on_client_edge_hit(self, direction, y):
+        if direction == 'left':
+            logger.info("Hit left edge. Sending switch_back to server.")
+            self.network.send_message({
+                'type': 'switch_back',
+                'y': y
+            })
