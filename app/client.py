@@ -8,6 +8,7 @@ class DeskFlowClient:
     def __init__(self):
         self.network = NetworkClient()
         self.input_handler = InputHandler()
+        self.is_active = False
         
         # Setup network callbacks
         self.network.register_callback('switch', self.on_switch)
@@ -29,6 +30,7 @@ class DeskFlowClient:
 
     def on_switch(self, data):
         logger.info("Server switched control to this client.")
+        self.is_active = True
         direction = data.get('direction')
         y_ratio = data.get('y_ratio', 0.5)
         
@@ -54,9 +56,15 @@ class DeskFlowClient:
         self.input_handler.inject_scroll(dx, dy)
 
     def on_client_edge_hit(self, direction, y_ratio):
+        if not self.is_active:
+            return
+            
         if direction == 'left':
             logger.info("Hit left edge. Sending switch_back to server.")
+            self.is_active = False
             self.network.send_message({
                 'type': 'switch_back',
                 'y_ratio': y_ratio
             })
+            # Prevent infinite loop: move cursor slightly right so it doesn't immediately re-trigger
+            self.input_handler.inject_position(50, int(y_ratio * self.input_handler.screen_height))
