@@ -2,9 +2,8 @@ import threading
 import time
 import logging
 import base64
+import zlib
 import win32clipboard
-from PIL import ImageGrab, Image
-import io
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,7 @@ class ClipboardHandler:
             pass
         self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
-        logger.info("Rich Clipboard polling started")
+        logger.info("Rich Clipboard polling started (Native Zlib Compression)")
 
     def stop(self):
         self.is_running = False
@@ -51,8 +50,8 @@ class ClipboardHandler:
             logger.warning("Text payload exceeding 5MB limit")
             text = None
             
-        if img_b64 and len(img_b64) > 1024 * 1024 * 20:
-            logger.warning("Image payload exceeding 20MB limit")
+        if img_b64 and len(img_b64) > 1024 * 1024 * 50:
+            logger.warning("Image payload exceeding 50MB limit")
             img_b64 = None
 
         if not text and not img_b64:
@@ -67,12 +66,8 @@ class ClipboardHandler:
                     win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
                     
                 if img_b64:
-                    png_bytes = base64.b64decode(img_b64)
-                    img = Image.open(io.BytesIO(png_bytes))
-                    
-                    output = io.BytesIO()
-                    img.convert("RGB").save(output, "BMP")
-                    dib_data = output.getvalue()[14:]
+                    # Decompress zlib string into native DIB bytes
+                    dib_data = zlib.decompress(base64.b64decode(img_b64))
                     win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
                     
                 win32clipboard.CloseClipboard()
@@ -90,20 +85,17 @@ class ClipboardHandler:
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
+                
                 if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
                     payload['text'] = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
-                win32clipboard.CloseClipboard()
-                
-                # Use Pillow to grab image (Pillow handles opening/closing clipboard internally for DIB)
-                try:
-                    img = ImageGrab.grabclipboard()
-                    if isinstance(img, Image.Image):
-                        with io.BytesIO() as output:
-                            img.save(output, format="PNG", optimize=True)
-                            payload['image'] = base64.b64encode(output.getvalue()).decode('utf-8')
-                except Exception as e:
-                    logger.error(f"Failed to read image from clipboard: {e}")
                     
+                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+                    dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+                    # Compress native DIB bytes using python's built-in zlib
+                    compressed = zlib.compress(dib_data, level=6)
+                    payload['image'] = base64.b64encode(compressed).decode('utf-8')
+                    
+                win32clipboard.CloseClipboard()
                 return payload
             except Exception as e:
                 logger.debug(f"Clipboard locked during read, retrying... {e}")

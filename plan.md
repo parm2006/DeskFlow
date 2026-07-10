@@ -144,4 +144,4 @@ DeskFlow/
 - [x] Route bulky payloads (Clipboard, File streams) through the background Data Socket to prevent mouse freezing.
 
 ### Phase 8 — Rich Clipboard Support
-- [x] Replaced `pyperclip` with native OS APIs (`pywin32`) to sync uncompressed images via heavily optimized `Pillow` background byte streams.
+- [x] Replaced `pyperclip` with native OS APIs (`pywin32`) to sync uncompressed images via heavily optimized `zlib` background byte streams.
