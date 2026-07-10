@@ -12,6 +12,7 @@ class DeskFlowClient:
         self.is_active = False
         
         # Setup network callbacks
+        self.network.register_callback('layout_config', self.on_layout_config)
         self.network.register_callback('switch', self.on_switch)
         self.network.register_callback('mouse_move', self.on_mouse_move)
         self.network.register_callback('mouse_click', self.on_mouse_click)
@@ -46,17 +47,39 @@ class DeskFlowClient:
     def disconnect(self):
         self.network.disconnect()
 
+    def on_layout_config(self, data):
+        server_pos = data.get('position', 'right')
+        logger.info(f"Received layout config. Client is positioned at server's {server_pos}")
+        
+        # Calculate our return edge (opposite of our position relative to server)
+        # If client is to the right of server, return edge is left.
+        # If client is below server (bottom), return edge is top.
+        opposites = {
+            'right': 'left',
+            'left': 'right',
+            'top': 'bottom',
+            'bottom': 'top'
+        }
+        return_edge = opposites.get(server_pos, 'left')
+        self.input_handler.set_layout(server_edge=server_pos, client_edge=return_edge)
+
     def on_switch(self, data):
         logger.info("Server switched control to this client.")
         self.is_active = True
         direction = data.get('direction')
-        y_ratio = data.get('y_ratio', 0.5)
+        ratio = data.get('ratio', 0.5)
         
-        y = int(y_ratio * self.input_handler.screen_height)
+        w = self.input_handler.screen_width
+        h = self.input_handler.screen_height
         
         if direction == 'right':
-            # Cursor came from the right edge of the server, so it enters on the left edge of the client
-            self.input_handler.inject_position(10, y)
+            self.input_handler.inject_position(2, int(h * ratio))
+        elif direction == 'left':
+            self.input_handler.inject_position(w - 2, int(h * ratio))
+        elif direction == 'top':
+            self.input_handler.inject_position(int(w * ratio), h - 2)
+        elif direction == 'bottom':
+            self.input_handler.inject_position(int(w * ratio), 2)
 
     def on_mouse_move(self, data):
         dx = data.get('dx', 0)
@@ -83,16 +106,16 @@ class DeskFlowClient:
         if key_data:
             self.input_handler.inject_key_release(key_data)
 
-    def on_client_edge_hit(self, direction, y_ratio):
+    def on_client_edge_hit(self, direction, ratio):
         if not self.is_active:
             return
             
-        if direction == 'left':
-            logger.info("Hit left edge. Sending switch_back to server.")
+        if direction == self.input_handler.client_edge:
+            logger.info(f"Hit {direction} edge. Sending switch_back to server.")
             self.is_active = False
             self.network.send_message({
                 'type': 'switch_back',
-                'y_ratio': y_ratio
+                'ratio': ratio
             })
 
     def on_local_copy(self, text):
