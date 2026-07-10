@@ -95,6 +95,10 @@ DeskFlow/
 - [x] Wrap raw TCP sockets in Python `ssl` module for TLS End-to-End Encryption.
 - [x] Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
 
+
+### Phase 1.9 -- Add relevant Tests for a CICD workflows
+- [ ] Add relevant Tests for a CICD workflows
+
 ### Phase 2 — Keyboard Redirection
 - [ ] Capture keyboard inputs on Server when Client is active.
 - [ ] Stream and inject keystrokes onto Client.
@@ -122,8 +126,8 @@ DeskFlow/
 - [x] Implement absolute or configured pixel mapping instead of strict relative ratios to fix offset entry points on different sized screens.
 
 ### Backlog / Known Bugs
-- [ ] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
-- [ ] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
+- [x] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
+- [x] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
 
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
