@@ -43,7 +43,6 @@ class DeskFlowGUI(ctk.CTk):
         self.server_password_label = ctk.CTkLabel(self.tab_server, text="Password:")
         self.server_password_label.pack(pady=5)
         self.server_password_entry = ctk.CTkEntry(self.tab_server, show="*")
-        self.server_password_entry.insert(0, "deskflow123")
         self.server_password_entry.pack(pady=5)
         
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
@@ -70,7 +69,6 @@ class DeskFlowGUI(ctk.CTk):
         self.client_password_label = ctk.CTkLabel(self.tab_client, text="Password:")
         self.client_password_label.pack(pady=5)
         self.client_password_entry = ctk.CTkEntry(self.tab_client, show="*")
-        self.client_password_entry.insert(0, "deskflow123")
         self.client_password_entry.pack(pady=5)
         
         self.client_connect_btn = ctk.CTkButton(self.tab_client, text="Connect", command=self.connect_client)
