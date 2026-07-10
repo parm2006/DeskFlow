@@ -14,9 +14,9 @@ class DeskFlowGUI(ctk.CTk):
         
         self.server = None
         self.client = None
-        self.overlay = None
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
+        self._init_overlay()
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
@@ -99,48 +99,53 @@ class DeskFlowGUI(ctk.CTk):
             self.client.disconnect()
         self.destroy()
 
+    def _init_overlay(self):
+        self.overlay = ctk.CTkToplevel(self)
+        self.overlay.attributes("-fullscreen", True)
+        self.overlay.attributes("-alpha", 0.01) # Almost invisible
+        self.overlay.config(cursor="none") # Hide host cursor
+        self.overlay.attributes("-topmost", True)
+        
+        # Bind events
+        self.overlay.bind("<Motion>", self.on_overlay_motion)
+        self.overlay.bind("<ButtonPress>", self.on_overlay_press)
+        self.overlay.bind("<ButtonRelease>", self.on_overlay_release)
+        self.overlay.bind("<MouseWheel>", self.on_overlay_scroll)
+        
+        self.overlay.withdraw() # Hide it initially
+        self.last_x = self.overlay_center_x
+        self.last_y = self.overlay_center_y
+
     def show_overlay(self):
-        if self.overlay is None:
-            self.overlay = ctk.CTkToplevel(self)
-            self.overlay.attributes("-fullscreen", True)
-            self.overlay.attributes("-alpha", 0.01) # Almost invisible
-            self.overlay.config(cursor="none") # Hide host cursor
-            
-            # Ensure it stays on top
-            self.overlay.attributes("-topmost", True)
-            
-            # Bind events
-            self.overlay.bind("<Motion>", self.on_overlay_motion)
-            self.overlay.bind("<ButtonPress>", self.on_overlay_press)
-            self.overlay.bind("<ButtonRelease>", self.on_overlay_release)
-            self.overlay.bind("<MouseWheel>", self.on_overlay_scroll)
-            
-            # Force focus so it receives inputs
-            self.overlay.focus_force()
-            self.overlay.grab_set()
-            
-            # Initial position
-            self.last_x = self.overlay_center_x
-            self.last_y = self.overlay_center_y
-            self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+        self.overlay.deiconify() # Show it
+        self.overlay.focus_force()
+        self.overlay.grab_set()
+        
+        # Initial position
+        self.last_x = self.overlay_center_x
+        self.last_y = self.overlay_center_y
+        self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
 
     def hide_overlay(self):
-        if self.overlay:
-            self.overlay.grab_release()
-            self.overlay.destroy()
-            self.overlay = None
+        self.overlay.grab_release()
+        self.overlay.withdraw()
 
     def on_overlay_motion(self, event):
         dx = event.x - self.last_x
         dy = event.y - self.last_y
         
+        # Ignore massive jumps caused by warping the cursor
+        if abs(dx) > 100 or abs(dy) > 100:
+            self.last_x = event.x
+            self.last_y = event.y
+            return
+            
         if dx != 0 or dy != 0:
             if self.server:
                 self.server.on_mouse_move(dx, dy)
                 
             # If we get too close to the edges of the overlay, re-center the mouse 
-            # to prevent it from ever escaping the transparent window.
-            if abs(event.x - self.overlay_center_x) > 200 or abs(event.y - self.overlay_center_y) > 200:
+            if abs(event.x - self.overlay_center_x) > 100 or abs(event.y - self.overlay_center_y) > 100:
                 self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
                 self.last_x = self.overlay_center_x
                 self.last_y = self.overlay_center_y
