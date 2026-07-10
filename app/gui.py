@@ -139,11 +139,22 @@ class DeskFlowGUI(ctk.CTk):
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
         
-        if self.client.connect(ip, port):
+        self.status_label.configure(text=f"Status: Connecting to {ip}:{port}...", text_color="orange")
+        self.client_connect_btn.configure(state="disabled")
+        
+        def _on_connect_result(success, error_msg):
+            # This is called from a background thread, use after() to update GUI safely
+            self.after(0, lambda: self._handle_connect_result(success, error_msg, ip, port))
+            
+        self.client.connect(ip, port, _on_connect_result)
+
+    def _handle_connect_result(self, success, error_msg, ip, port):
+        self.client_connect_btn.configure(state="normal")
+        if success:
             self.status_label.configure(text=f"Status: Connected to {ip}:{port}", text_color="green")
             self.save_known_host(ip, port)
         else:
-            self.status_label.configure(text="Status: Connection failed", text_color="red")
+            self.status_label.configure(text=f"Status: Connection failed ({error_msg})", text_color="red")
 
     def on_close(self):
         self.hide_overlay()
