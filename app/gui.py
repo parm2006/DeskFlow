@@ -165,8 +165,8 @@ class DeskFlowGUI(ctk.CTk):
             on_capture_start=self.show_overlay, 
             on_capture_stop=self.hide_overlay
         )
-        self.server.network.register_callback('connected', self._on_server_client_connected)
-        self.server.network.register_callback('disconnected', self._on_server_client_disconnected)
+        self.server.control_network.register_callback('connected', self._on_server_client_connected)
+        self.server.control_network.register_callback('disconnected', self._on_server_client_disconnected)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
@@ -211,7 +211,7 @@ class DeskFlowGUI(ctk.CTk):
             self.save_known_host(ip, port)
             self.client_connect_btn.pack_forget()
             self.client_disconnect_btn.pack(pady=10)
-            self.client.network.register_callback('disconnected', self._on_client_disconnected_event)
+            self.client.control_network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
             self.status_label.configure(text=f"Status: Connection failed ({error_msg})", text_color="red")
 
