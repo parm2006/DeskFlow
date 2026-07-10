@@ -15,6 +15,8 @@ class DeskFlowClient:
         self.network.register_callback('mouse_move', self.on_mouse_move)
         self.network.register_callback('mouse_click', self.on_mouse_click)
         self.network.register_callback('mouse_scroll', self.on_mouse_scroll)
+        self.network.register_callback('key_press', self.on_key_press)
+        self.network.register_callback('key_release', self.on_key_release)
         self.network.register_callback('disconnected', self.on_disconnected)
         
         # Setup input callbacks
@@ -59,6 +61,16 @@ class DeskFlowClient:
         dx = data.get('dx', 0)
         dy = data.get('dy', 0)
         self.input_handler.inject_scroll(dx, dy)
+
+    def on_key_press(self, data):
+        key_data = data.get('key')
+        if key_data:
+            self.input_handler.inject_key_press(key_data)
+
+    def on_key_release(self, data):
+        key_data = data.get('key')
+        if key_data:
+            self.input_handler.inject_key_release(key_data)
 
     def on_client_edge_hit(self, direction, y_ratio):
         if not self.is_active:

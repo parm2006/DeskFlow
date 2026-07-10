@@ -21,6 +21,8 @@ class DeskFlowServer:
         self.input_handler.register_callback('mouse_move', self.on_mouse_move)
         self.input_handler.register_callback('mouse_click', self.on_mouse_click)
         self.input_handler.register_callback('mouse_scroll', self.on_mouse_scroll)
+        self.input_handler.register_callback('key_press', self.on_key_press)
+        self.input_handler.register_callback('key_release', self.on_key_release)
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -51,10 +53,12 @@ class DeskFlowServer:
                 'y_ratio': y_ratio
             })
             self.input_handler.stop() # Stop edge detection
+            self.input_handler.start_keyboard_capture()
             if self.on_capture_start:
                 self.on_capture_start()
         elif direction == 'left':
             logger.info("Left edge hit while capturing. Switching back to server.")
+            self.input_handler.stop_keyboard_capture()
             if self.on_capture_stop:
                 self.on_capture_stop()
             self.input_handler.start_edge_detection()
@@ -65,6 +69,7 @@ class DeskFlowServer:
         # Client hit its left edge
         logger.info("Client signaled switch back.")
         y_ratio = data.get('y_ratio', 0.5)
+        self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.start_edge_detection()
@@ -90,4 +95,16 @@ class DeskFlowServer:
             'type': 'mouse_scroll',
             'dx': dx,
             'dy': dy
+        })
+
+    def on_key_press(self, key_data):
+        self.network.send_message({
+            'type': 'key_press',
+            'key': key_data
+        })
+
+    def on_key_release(self, key_data):
+        self.network.send_message({
+            'type': 'key_release',
+            'key': key_data
         })

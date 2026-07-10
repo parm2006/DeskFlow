@@ -1,12 +1,15 @@
 import logging
-from pynput.mouse import Controller, Listener, Button
+from pynput.mouse import Controller as MouseController, Listener as MouseListener, Button
+from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener, Key, KeyCode
 
 logger = logging.getLogger(__name__)
 
 class InputHandler:
     def __init__(self):
-        self.mouse = Controller()
+        self.mouse = MouseController()
         self.mouse_listener = None
+        self.keyboard = KeyboardController()
+        self.keyboard_listener = None
         self.callbacks = {}
         
         self.is_captured = False
@@ -42,7 +45,7 @@ class InputHandler:
     def start_edge_detection(self):
         self.stop()
         self.is_captured = False
-        self.mouse_listener = Listener(on_move=self._on_move_edge)
+        self.mouse_listener = MouseListener(on_move=self._on_move_edge)
         self.mouse_listener.start()
 
     def start_capture(self):
@@ -53,7 +56,7 @@ class InputHandler:
         # We try to use a normal listener, and we will recenter the cursor 
         # so it doesn't leave the server screen or click things.
         # Alternatively, we just suppress it all. Let's try suppress=True first.
-        self.mouse_listener = Listener(
+        self.mouse_listener = MouseListener(
             on_move=self._on_move_capture,
             on_click=self._on_click_capture,
             on_scroll=self._on_scroll_capture,
@@ -66,7 +69,22 @@ class InputHandler:
         if self.mouse_listener:
             self.mouse_listener.stop()
             self.mouse_listener = None
+        self.stop_keyboard_capture()
         self.is_captured = False
+
+    def start_keyboard_capture(self):
+        self.stop_keyboard_capture()
+        self.keyboard_listener = KeyboardListener(
+            on_press=self._on_key_press,
+            on_release=self._on_key_release,
+            suppress=True
+        )
+        self.keyboard_listener.start()
+
+    def stop_keyboard_capture(self):
+        if self.keyboard_listener:
+            self.keyboard_listener.stop()
+            self.keyboard_listener = None
 
     def _on_move_edge(self, x, y):
         # Trigger if we hit the right edge
@@ -107,6 +125,22 @@ class InputHandler:
             return
         self.trigger('mouse_scroll', dx, dy)
 
+    def _on_key_press(self, key):
+        self.trigger('key_press', self._serialize_key(key))
+
+    def _on_key_release(self, key):
+        self.trigger('key_release', self._serialize_key(key))
+
+    def _serialize_key(self, key):
+        if hasattr(key, 'char') and key.char is not None:
+            return {'type': 'char', 'value': key.char}
+        elif hasattr(key, 'name'):
+            return {'type': 'special', 'value': key.name}
+        elif hasattr(key, 'vk') and key.vk is not None:
+            return {'type': 'vk', 'value': key.vk}
+        else:
+            return {'type': 'unknown', 'value': str(key)}
+
     # --- Methods for the Client side to simulate inputs ---
     
     def inject_move(self, dx, dy):
@@ -130,3 +164,25 @@ class InputHandler:
 
     def inject_scroll(self, dx, dy):
         self.mouse.scroll(dx, dy)
+
+    def inject_key_press(self, key_data):
+        key = self._deserialize_key(key_data)
+        if key:
+            self.keyboard.press(key)
+
+    def inject_key_release(self, key_data):
+        key = self._deserialize_key(key_data)
+        if key:
+            self.keyboard.release(key)
+
+    def _deserialize_key(self, key_data):
+        if not key_data: return None
+        k_type = key_data.get('type')
+        val = key_data.get('value')
+        if k_type == 'char':
+            return val
+        elif k_type == 'special':
+            return getattr(Key, val, None)
+        elif k_type == 'vk':
+            return KeyCode.from_vk(val)
+        return None
