@@ -104,13 +104,13 @@ DeskFlow/
 - [ ] Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
 - [ ] Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
 
-### Phase 3 — Clipboard Sync
-- [ ] Watch clipboard contents for changes.
-- [ ] Send clipboard text payload across the socket on copy events.
+### Phase 3 — Plaintext Clipboard Sync
+- [x] Watch clipboard contents for changes using `pyperclip`.
+- [x] Send plaintext clipboard payload across the socket on copy events.
 
 ### Phase 3.5 — Clipboard Security
-- [ ] Implement strict payload validation to prevent malformed clipboard data from causing crashes or RCE on the remote machine.
-- [ ] Ensure sensitive copied data (passwords) are cleared securely if the connection drops.
+- [x] Implement strict payload validation (length checks and type checks) to prevent memory exhaustion or remote code execution.
+- [x] Ensure sensitive copied data (passwords) are cleared securely from the clipboard if the connection drops.
 
 ### Phase 4 — File Sharing & Drag-and-Drop
 - [ ] Implement background file transfer server.
@@ -124,6 +124,7 @@ DeskFlow/
 ### Backlog / Known Bugs
 - [x] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
 - [x] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
+- [ ] Rich Clipboard Support: Currently, clipboard synchronization only supports plaintext strings. Investigate OS-native APIs to support copying and pasting formatted text (RTF) and raw image data across the network.
 
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.

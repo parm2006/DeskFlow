@@ -1,6 +1,6 @@
-import logging
 from app.network import NetworkClient
 from app.input_handler import InputHandler
+from app.clipboard_handler import ClipboardHandler
 
 logger = logging.getLogger(__name__)
 
@@ -18,19 +18,29 @@ class DeskFlowClient:
         self.network.register_callback('key_press', self.on_key_press)
         self.network.register_callback('key_release', self.on_key_release)
         self.network.register_callback('disconnected', self.on_disconnected)
+        self.network.register_callback('clipboard_sync', self.on_remote_copy)
         
         # Setup input callbacks
         self.input_handler.register_callback('client_edge_hit', self.on_client_edge_hit)
 
+        # Setup clipboard
+        self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+
     def on_disconnected(self, data):
         logger.info("Disconnected from Server.")
         self.is_active = False
+        self.clipboard.stop()
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
 
     def connect(self, host, port, callback):
-        self.network.connect(host, port, callback)
+        def _connect_callback(success, err):
+            if success:
+                self.clipboard.start()
+            if callback:
+                callback(success, err)
+        self.network.connect(host, port, _connect_callback)
 
     def disconnect(self):
         self.network.disconnect()
@@ -83,3 +93,13 @@ class DeskFlowClient:
                 'type': 'switch_back',
                 'y_ratio': y_ratio
             })
+
+    def on_local_copy(self, text):
+        self.network.send_message({
+            'type': 'clipboard_sync',
+            'text': text
+        })
+
+    def on_remote_copy(self, data):
+        text = data.get('text', '')
+        self.clipboard.inject(text)
