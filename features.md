@@ -4,12 +4,9 @@
 
 ### Wireless Mouse Roaming
 * **Edge Detection Transition**: Moving the mouse to the right edge of the Server screen instantly captures the cursor and transitions it to the Client screen, completely wirelessly.
-* **Instant Return**: Moving the mouse back to the left edge of the Client screen instantly returns control to the Server.
 * **Scroll & Click Forwarding**: All mouse scroll events and Left/Right/Middle clicks are faithfully reproduced on the Client machine.
-* **Low Latency**: TCP Nagle's algorithm is disabled to ensure instantaneous transmission of pixel-perfect coordinates.
 
-### Display Scaling & Sync
-* **Multi-Monitor DPI Awareness**: The Server inherently scales coordinates to match the logical dimensions of the Client, meaning physical transitions between a large desktop monitor and a small laptop screen feel perfectly mapped.
+
 
 ### End-to-End Security
 * **Auto-Generated TLS Certificates**: DeskFlow dynamically generates local self-signed RSA certificates to lock down the connection without requiring complex configuration.
@@ -19,6 +16,9 @@
 ### Quality of Life UI
 * **CustomTkinter Overlay**: DeskFlow uses a highly invisible GUI overlay to seamlessly trap the mouse during client control, preventing underlying OS applications from interfering.
 * **Known Hosts Autofill**: The Client intelligently remembers past successful connections in a local Git-ignored `known_hosts.json` file. The GUI dropdown automatically populates and auto-selects your most recent server IP and Port.
+* **Dynamic Connection Controls**: The interface provides dedicated red `Disconnect` and `Stop Server` buttons that only appear during active connections.
+* **Reactive Status Engine**: If a network connection is forcefully dropped (e.g., losing Wi-Fi), the GUI on both computers instantly reacts, updating statuses, releasing the physical mouse, and resetting buttons without ever freezing.
+* **Input Validation**: The UI actively prevents starting servers or connecting clients if required fields (like passwords) are left blank.
 
 ---
 
