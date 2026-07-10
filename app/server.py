@@ -1,6 +1,6 @@
-import logging
 from app.network import NetworkServer
 from app.input_handler import InputHandler
+from app.clipboard_handler import ClipboardHandler
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,7 @@ class DeskFlowServer:
         self.network.register_callback('connected', self.on_client_connected)
         self.network.register_callback('disconnected', self.on_client_disconnected)
         self.network.register_callback('switch_back', self.on_switch_back)
+        self.network.register_callback('clipboard_sync', self.on_remote_copy)
         
         # Setup input callbacks
         self.input_handler.register_callback('edge_hit', self.on_edge_hit)
@@ -23,6 +24,9 @@ class DeskFlowServer:
         self.input_handler.register_callback('mouse_scroll', self.on_mouse_scroll)
         self.input_handler.register_callback('key_press', self.on_key_press)
         self.input_handler.register_callback('key_release', self.on_key_release)
+
+        # Setup clipboard
+        self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -37,12 +41,14 @@ class DeskFlowServer:
     def on_client_connected(self, data):
         logger.info("Client connected, starting edge detection.")
         self.input_handler.start_edge_detection()
+        self.clipboard.start()
 
     def on_client_disconnected(self, data):
-        logger.info("Client disconnected, stopping edge detection.")
+        logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.stop()
+        self.clipboard.stop()
 
     def on_edge_hit(self, direction, y_ratio):
         if direction == 'right':
@@ -108,3 +114,13 @@ class DeskFlowServer:
             'type': 'key_release',
             'key': key_data
         })
+
+    def on_local_copy(self, text):
+        self.network.send_message({
+            'type': 'clipboard_sync',
+            'text': text
+        })
+
+    def on_remote_copy(self, data):
+        text = data.get('text', '')
+        self.clipboard.inject(text)
