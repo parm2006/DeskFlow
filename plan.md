@@ -61,6 +61,9 @@ DeskFlow is a lightweight, wireless KVM utility written in Python. It allows two
 
 ```
 DeskFlow/
+├── LICENSE              # License Information
+├── cert.pem             # Auto-generated Public Certificate
+├── key.pem              # Auto-generated Private Key
 ├── known_hosts.json     # Saved IP/Port configurations
 ├── features.md          # Comprehensive list of DeskFlow features
 ├── plan.md              # Project roadmap and architecture
