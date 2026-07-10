@@ -112,9 +112,13 @@ DeskFlow/
 - [x] Implement strict payload validation (length checks and type checks) to prevent memory exhaustion or remote code execution.
 - [x] Ensure sensitive copied data (passwords) are cleared securely from the clipboard if the connection drops.
 
-### Phase 4 — File Sharing & Drag-and-Drop
+### Phase 4 — File Sharing & Drag-and-Drop (ON HOLD)
 - [ ] Implement background file transfer server.
-- [ ] Capture file references on drag start and transmit files to client's temporary cache directory.
+- [ ] *Concerns to address before implementation:*
+  - **Network Blocking**: Sending large files over the main socket will freeze mouse/keyboard inputs. Requires a dedicated secondary TCP socket.
+  - **Path Traversal Attacks**: Incoming filenames must be rigorously sanitized and locked to a strict `DeskFlow_Downloads` directory to prevent system overwrites.
+  - **Malware Execution**: Files should only be saved to disk. Automatic execution upon transfer is a critical RCE vulnerability.
+  - **OS Drag Limitations**: Grabbing files mid-drag on Windows bypasses `pynput` and requires complex Windows Shell (Explorer) hooks, which may conflict with edge detection.
 
 ### Phase 5 - Multi-Monitor Scaling and Resolution Sync
 - [x] Handle physical monitor size disparities (e.g. 32-inch vs 13-inch).
