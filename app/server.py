@@ -5,8 +5,8 @@ from app.input_handler import InputHandler
 logger = logging.getLogger(__name__)
 
 class DeskFlowServer:
-    def __init__(self, port=5000, on_capture_start=None, on_capture_stop=None):
-        self.network = NetworkServer('0.0.0.0', port)
+    def __init__(self, password, port=5000, on_capture_start=None, on_capture_stop=None):
+        self.network = NetworkServer(password, '0.0.0.0', port)
         self.input_handler = InputHandler()
         self.on_capture_start = on_capture_start
         self.on_capture_stop = on_capture_stop
