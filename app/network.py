@@ -3,6 +3,9 @@ import threading
 import json
 import struct
 import logging
+import ssl
+import time
+from app.crypto import ensure_certificates, CERT_FILE, KEY_FILE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,6 +14,7 @@ class NetworkNode:
     def __init__(self):
         self.sock = None
         self.connected = False
+        self.authenticated = False
         self.callbacks = {} # event_type -> list of callback functions
         self.receive_thread = None
 
@@ -56,6 +60,26 @@ class NetworkNode:
                 
                 msg_dict = json.loads(data.decode('utf-8'))
                 event_type = msg_dict.get('type')
+                
+                if not self.authenticated:
+                    if getattr(self, 'is_server', False):
+                        if event_type == 'auth' and msg_dict.get('password') == self.password:
+                            self.authenticated = True
+                            self.send_message({'type': 'auth_success'})
+                            self.trigger_callbacks('connected', {'addr': getattr(self, 'client_addr', None)})
+                            continue
+                        else:
+                            logger.error("Authentication failed")
+                            break
+                    else:
+                        if event_type == 'auth_success':
+                            self.authenticated = True
+                            self.trigger_callbacks('connected', {'host': getattr(self, 'host', None)})
+                            continue
+                        
+                if not self.authenticated:
+                    continue
+                    
                 if event_type:
                     self.trigger_callbacks(event_type, msg_dict)
                 else:
@@ -87,13 +111,19 @@ class NetworkNode:
             self.trigger_callbacks('disconnected', {})
 
 class NetworkServer(NetworkNode):
-    def __init__(self, host='0.0.0.0', port=5000):
+    def __init__(self, password, host='0.0.0.0', port=5000):
         super().__init__()
+        self.is_server = True
+        self.password = password
         self.host = host
         self.port = port
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.accept_thread = None
+        
+        ensure_certificates()
+        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
 
     def start(self):
         try:
@@ -112,18 +142,27 @@ class NetworkServer(NetworkNode):
             while True:
                 conn, addr = self.server_sock.accept()
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                logger.info(f"Client connected from {addr}")
-                # For phase 1, only handle one client at a time
-                if self.connected:
-                    logger.info("Already connected, dropping new connection")
+                logger.info(f"Client attempting connection from {addr}")
+                
+                # Wrap with SSL
+                try:
+                    secure_conn = self.ssl_context.wrap_socket(conn, server_side=True)
+                except Exception as e:
+                    logger.error(f"SSL Handshake failed: {e}")
                     conn.close()
                     continue
+
+                if self.connected:
+                    logger.info("Already connected, dropping new connection")
+                    secure_conn.close()
+                    continue
                 
-                self.sock = conn
+                self.sock = secure_conn
+                self.client_addr = addr
                 self.connected = True
-                self.trigger_callbacks('connected', {'addr': addr})
+                self.authenticated = False
                 
-                self.receive_thread = threading.Thread(target=self._receive_loop, args=(conn,), daemon=True)
+                self.receive_thread = threading.Thread(target=self._receive_loop, args=(secure_conn,), daemon=True)
                 self.receive_thread.start()
         except Exception as e:
             logger.error(f"Accept loop error: {e}")
@@ -136,17 +175,42 @@ class NetworkServer(NetworkNode):
             pass
 
 class NetworkClient(NetworkNode):
+    def __init__(self, password):
+        super().__init__()
+        self.is_server = False
+        self.password = password
+
     def connect(self, host, port=5000):
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.sock.connect((host, port))
+            self.host = host
+            raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            raw_sock.connect((host, port))
+            
+            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            self.sock = ssl_context.wrap_socket(raw_sock, server_hostname=host)
             self.connected = True
-            self.trigger_callbacks('connected', {'host': host, 'port': port})
+            self.authenticated = False
             
             self.receive_thread = threading.Thread(target=self._receive_loop, args=(self.sock,), daemon=True)
             self.receive_thread.start()
-            return True
+            
+            # Send auth packet
+            self.send_message({'type': 'auth', 'password': self.password})
+            
+            # Wait for auth response (timeout after 2s)
+            start_time = time.time()
+            while not self.authenticated and self.connected:
+                if time.time() - start_time > 2.0:
+                    logger.error("Authentication timed out")
+                    self.disconnect()
+                    return False
+                time.sleep(0.1)
+                
+            return self.authenticated
         except Exception as e:
             logger.error(f"Failed to connect to {host}:{port}: {e}")
             return False

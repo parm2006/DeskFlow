@@ -5,8 +5,8 @@ from app.input_handler import InputHandler
 logger = logging.getLogger(__name__)
 
 class DeskFlowClient:
-    def __init__(self):
-        self.network = NetworkClient()
+    def __init__(self, password):
+        self.network = NetworkClient(password)
         self.input_handler = InputHandler()
         self.is_active = False
         

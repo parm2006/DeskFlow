@@ -14,7 +14,7 @@ class DeskFlowGUI(ctk.CTk):
         super().__init__()
         
         self.title("DeskFlow")
-        self.geometry("400x350")
+        self.geometry("400x450")
         
         self.server = None
         self.client = None
@@ -40,6 +40,12 @@ class DeskFlowGUI(ctk.CTk):
         self.server_port_entry.insert(0, "5000")
         self.server_port_entry.pack(pady=5)
         
+        self.server_password_label = ctk.CTkLabel(self.tab_server, text="Password:")
+        self.server_password_label.pack(pady=5)
+        self.server_password_entry = ctk.CTkEntry(self.tab_server, show="*")
+        self.server_password_entry.insert(0, "deskflow123")
+        self.server_password_entry.pack(pady=5)
+        
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
         self.server_start_btn.pack(pady=10)
         
@@ -60,6 +66,12 @@ class DeskFlowGUI(ctk.CTk):
         default_port = str(self.known_hosts[0]['port']) if self.known_hosts else "5000"
         self.client_port_entry.insert(0, default_port)
         self.client_port_entry.pack(pady=5)
+        
+        self.client_password_label = ctk.CTkLabel(self.tab_client, text="Password:")
+        self.client_password_label.pack(pady=5)
+        self.client_password_entry = ctk.CTkEntry(self.tab_client, show="*")
+        self.client_password_entry.insert(0, "deskflow123")
+        self.client_password_entry.pack(pady=5)
         
         self.client_connect_btn = ctk.CTkButton(self.tab_client, text="Connect", command=self.connect_client)
         self.client_connect_btn.pack(pady=10)
@@ -102,10 +114,11 @@ class DeskFlowGUI(ctk.CTk):
 
     def start_server(self):
         port = int(self.server_port_entry.get())
+        password = self.server_password_entry.get()
         if self.server:
             self.server.stop()
             
-        self.server = DeskFlowServer(port=port, on_capture_start=self.show_overlay, on_capture_stop=self.hide_overlay)
+        self.server = DeskFlowServer(password=password, port=port, on_capture_start=self.show_overlay, on_capture_stop=self.hide_overlay)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
@@ -118,11 +131,12 @@ class DeskFlowGUI(ctk.CTk):
     def connect_client(self):
         ip = self.client_ip_entry.get()
         port = int(self.client_port_entry.get())
+        password = self.client_password_entry.get()
         
         if self.client:
             self.client.disconnect()
             
-        self.client = DeskFlowClient()
+        self.client = DeskFlowClient(password=password)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
