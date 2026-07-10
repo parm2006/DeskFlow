@@ -11,14 +11,22 @@ class DeskFlowServer:
         self.on_capture_start = on_capture_start
         self.on_capture_stop = on_capture_stop
         
-        self.network = NetworkServer(password, '0.0.0.0', port)
+        self.control_network = NetworkServer(password, '0.0.0.0', port)
+        self.data_network = NetworkServer(password, '0.0.0.0', port + 1)
         self.input_handler = InputHandler()
         
-        # Setup network callbacks
-        self.network.register_callback('connected', self.on_client_connected)
-        self.network.register_callback('disconnected', self.on_client_disconnected)
-        self.network.register_callback('switch_back', self.on_switch_back)
-        self.network.register_callback('clipboard_sync', self.on_remote_copy)
+        self.control_connected = False
+        self.data_connected = False
+        
+        # Setup control network callbacks
+        self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control'))
+        self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
+        self.control_network.register_callback('switch_back', self.on_switch_back)
+        
+        # Setup data network callbacks
+        self.data_network.register_callback('connected', lambda d: self._on_socket_connected('data'))
+        self.data_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('data'))
+        self.data_network.register_callback('clipboard_sync', self.on_remote_copy)
         
         # Setup input callbacks
         self.input_handler.register_callback('edge_hit', self.on_edge_hit)
@@ -35,23 +43,50 @@ class DeskFlowServer:
         self.input_handler.set_screen_size(w, h)
 
     def start(self):
-        return self.network.start()
+        c_success = self.control_network.start()
+        d_success = self.data_network.start()
+        if c_success and d_success:
+            return True
+        self.stop()
+        return False
 
     def stop(self):
+        self.control_network.stop()
+        self.data_network.stop()
         self.input_handler.stop()
-        self.network.stop()
+        self.clipboard.stop()
 
-    def on_client_connected(self, data):
-        logger.info(f"Client connected, starting edge detection for layout: {self.layout_position}")
-        # Send handshake layout config
-        self.network.send_message({
+    def _on_socket_connected(self, sock_type):
+        if sock_type == 'control':
+            self.control_connected = True
+        elif sock_type == 'data':
+            self.data_connected = True
+            
+        if self.control_connected and self.data_connected:
+            self.on_client_connected()
+
+    def _on_socket_disconnected(self, sock_type):
+        if sock_type == 'control':
+            self.control_connected = False
+        elif sock_type == 'data':
+            self.data_connected = False
+            
+        # If either disconnects, tear down both
+        self.control_network.disconnect()
+        self.data_network.disconnect()
+        self.on_client_disconnected()
+
+    def on_client_connected(self):
+        logger.info(f"Client connected on both ports, starting edge detection for layout: {self.layout_position}")
+        # Send handshake layout config over control
+        self.control_network.send_message({
             'type': 'layout_config',
             'position': self.layout_position
         })
         self.input_handler.start_edge_detection(self.layout_position)
         self.clipboard.start()
 
-    def on_client_disconnected(self, data):
+    def on_client_disconnected(self):
         logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
         if self.on_capture_stop:
             self.on_capture_stop()
@@ -61,7 +96,7 @@ class DeskFlowServer:
     def on_edge_hit(self, direction, ratio):
         if direction == self.layout_position:
             logger.info(f"Hit {direction} edge. Switching to client.")
-            self.network.send_message({
+            self.control_network.send_message({
                 'type': 'switch',
                 'direction': direction,
                 'ratio': ratio
@@ -94,40 +129,40 @@ class DeskFlowServer:
         self.input_handler.start_edge_detection(self.layout_position)
 
     def on_mouse_move(self, dx, dy):
-        self.network.send_message({
+        self.control_network.send_message({
             'type': 'mouse_move',
             'dx': dx,
             'dy': dy
         })
 
-    def on_mouse_click(self, button_name, pressed):
-        self.network.send_message({
+    def on_mouse_click(self, button, pressed):
+        self.control_network.send_message({
             'type': 'mouse_click',
-            'button': button_name,
+            'button': button,
             'pressed': pressed
         })
 
     def on_mouse_scroll(self, dx, dy):
-        self.network.send_message({
+        self.control_network.send_message({
             'type': 'mouse_scroll',
             'dx': dx,
             'dy': dy
         })
 
     def on_key_press(self, key_data):
-        self.network.send_message({
+        self.control_network.send_message({
             'type': 'key_press',
             'key': key_data
         })
 
     def on_key_release(self, key_data):
-        self.network.send_message({
+        self.control_network.send_message({
             'type': 'key_release',
             'key': key_data
         })
 
     def on_local_copy(self, text):
-        self.network.send_message({
+        self.data_network.send_message({
             'type': 'clipboard_sync',
             'text': text
         })
