@@ -71,7 +71,13 @@ class InputHandler:
     def _on_move_edge(self, x, y):
         # Trigger if we hit the right edge
         if x >= self.screen_width - 2:
-            self.trigger('edge_hit', 'right', y)
+            y_ratio = y / self.screen_height
+            self.trigger('edge_hit', 'right', y_ratio)
+            
+        # Trigger if we hit left edge
+        if x <= 0:
+            y_ratio = y / self.screen_height
+            self.trigger('edge_hit', 'left', y_ratio)
 
     def _on_move_capture(self, x, y):
         if not self.is_captured:
@@ -108,7 +114,8 @@ class InputHandler:
         # Check if client mouse hits left edge to return to server
         x, y = self.mouse.position
         if x <= 0:
-            self.trigger('client_edge_hit', 'left', y)
+            y_ratio = y / self.screen_height
+            self.trigger('client_edge_hit', 'left', y_ratio)
 
     def inject_position(self, x, y):
         self.mouse.position = (x, y)

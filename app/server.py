@@ -40,13 +40,13 @@ class DeskFlowServer:
         logger.info("Client disconnected, stopping edge detection.")
         self.input_handler.stop()
 
-    def on_edge_hit(self, direction, y):
+    def on_edge_hit(self, direction, y_ratio):
         if direction == 'right':
             logger.info("Right edge hit. Switching to client.")
             self.network.send_message({
                 'type': 'switch',
                 'direction': 'right',
-                'y': y
+                'y_ratio': y_ratio
             })
             self.input_handler.stop() # Stop edge detection
             if self.on_capture_start:
@@ -56,15 +56,17 @@ class DeskFlowServer:
             if self.on_capture_stop:
                 self.on_capture_stop()
             self.input_handler.start_edge_detection()
+            y = int(y_ratio * self.input_handler.screen_height)
             self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
 
     def on_switch_back(self, data):
         # Client hit its left edge
         logger.info("Client signaled switch back.")
-        y = data.get('y', self.input_handler.screen_height // 2)
+        y_ratio = data.get('y_ratio', 0.5)
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.start_edge_detection()
+        y = int(y_ratio * self.input_handler.screen_height)
         self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
 
     def on_mouse_move(self, dx, dy):

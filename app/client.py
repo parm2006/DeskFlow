@@ -30,7 +30,9 @@ class DeskFlowClient:
     def on_switch(self, data):
         logger.info("Server switched control to this client.")
         direction = data.get('direction')
-        y = data.get('y', self.input_handler.screen_height // 2)
+        y_ratio = data.get('y_ratio', 0.5)
+        
+        y = int(y_ratio * self.input_handler.screen_height)
         
         if direction == 'right':
             # Cursor came from the right edge of the server, so it enters on the left edge of the client
@@ -51,10 +53,10 @@ class DeskFlowClient:
         dy = data.get('dy', 0)
         self.input_handler.inject_scroll(dx, dy)
 
-    def on_client_edge_hit(self, direction, y):
+    def on_client_edge_hit(self, direction, y_ratio):
         if direction == 'left':
             logger.info("Hit left edge. Sending switch_back to server.")
             self.network.send_message({
                 'type': 'switch_back',
-                'y': y
+                'y_ratio': y_ratio
             })
