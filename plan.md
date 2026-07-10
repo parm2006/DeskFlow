@@ -83,14 +83,26 @@ DeskFlow/
 * Implement edge detection on Server and lock/release cursor.
 * Stream mouse coordinates to Client and move Client cursor.
 
+### Phase 1.5 — Network Security & Authentication
+* Wrap raw TCP sockets in Python `ssl` module for TLS End-to-End Encryption.
+* Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
+
 ### Phase 2 — Keyboard Redirection
 * Capture keyboard inputs on Server when Client is active.
 * Stream and inject keystrokes onto Client.
 * Handle system/modifier keys (Ctrl, Alt, Shift, Win/Cmd).
 
+### Phase 2.5 — Keyboard Security
+* Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
+* Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
+
 ### Phase 3 — Clipboard Sync
 * Watch clipboard contents for changes.
 * Send clipboard text payload across the socket on copy events.
+
+### Phase 3.5 — Clipboard Security
+* Implement strict payload validation to prevent malformed clipboard data from causing crashes or RCE on the remote machine.
+* Ensure sensitive copied data (passwords) are cleared securely if the connection drops.
 
 ### Phase 4 — File Sharing & Drag-and-Drop
 * Implement background file transfer server.
