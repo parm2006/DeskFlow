@@ -79,43 +79,43 @@ DeskFlow/
 ## Implementation Roadmap
 
 ### Phase 1 — Basic Socket Connectivity & Mouse Roaming
-* Establish basic TCP connection between Server and Client.
-* Implement edge detection on Server and lock/release cursor.
-* Stream mouse coordinates to Client and move Client cursor.
+- [x] Establish basic TCP connection between Server and Client.
+- [x] Implement edge detection on Server and lock/release cursor.
+- [x] Stream mouse coordinates to Client and move Client cursor.
 
 ### Phase 1.5 — Network Security & Authentication
-* Wrap raw TCP sockets in Python `ssl` module for TLS End-to-End Encryption.
-* Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
+- [x] Wrap raw TCP sockets in Python `ssl` module for TLS End-to-End Encryption.
+- [x] Implement a basic Authentication handshake (e.g. password required to connect) to prevent unauthorized devices from hijacking the mouse.
 
 ### Phase 2 — Keyboard Redirection
-* Capture keyboard inputs on Server when Client is active.
-* Stream and inject keystrokes onto Client.
-* Handle system/modifier keys (Ctrl, Alt, Shift, Win/Cmd).
+- [ ] Capture keyboard inputs on Server when Client is active.
+- [ ] Stream and inject keystrokes onto Client.
+- [ ] Handle system/modifier keys (Ctrl, Alt, Shift, Win/Cmd).
 
 ### Phase 2.5 — Keyboard Security
-* Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
-* Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
+- [ ] Ensure keyboard hooking is strictly limited to when the mouse is physically on the Client screen.
+- [ ] Implement OS-level suppressions securely so local host keystrokes are never accidentally broadcasted or leaked.
 
 ### Phase 3 — Clipboard Sync
-* Watch clipboard contents for changes.
-* Send clipboard text payload across the socket on copy events.
+- [ ] Watch clipboard contents for changes.
+- [ ] Send clipboard text payload across the socket on copy events.
 
 ### Phase 3.5 — Clipboard Security
-* Implement strict payload validation to prevent malformed clipboard data from causing crashes or RCE on the remote machine.
-* Ensure sensitive copied data (passwords) are cleared securely if the connection drops.
+- [ ] Implement strict payload validation to prevent malformed clipboard data from causing crashes or RCE on the remote machine.
+- [ ] Ensure sensitive copied data (passwords) are cleared securely if the connection drops.
 
 ### Phase 4 — File Sharing & Drag-and-Drop
-* Implement background file transfer server.
-* Capture file references on drag start and transmit files to client's temporary cache directory.
+- [ ] Implement background file transfer server.
+- [ ] Capture file references on drag start and transmit files to client's temporary cache directory.
 
-### Phase 5 - Multi-Monitor Scaling and Resolution Sync (COMPLETED)
-* Handle physical monitor size disparities (e.g. 32-inch vs 13-inch).
-* Currently uses relative y_ratio, but physical movement distances can feel disconnected.
-* Implement absolute or configured pixel mapping instead of strict relative ratios to fix offset entry points on different sized screens.
+### Phase 5 - Multi-Monitor Scaling and Resolution Sync
+- [x] Handle physical monitor size disparities (e.g. 32-inch vs 13-inch).
+- [x] Currently uses relative y_ratio, but physical movement distances can feel disconnected.
+- [x] Implement absolute or configured pixel mapping instead of strict relative ratios to fix offset entry points on different sized screens.
 
 ### Backlog / Known Bugs
-* App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
-* Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
+- [ ] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
+- [ ] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
 
 ### Quality of Life Improvements
-* (COMPLETED) Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
+- [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
