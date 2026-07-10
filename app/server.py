@@ -161,12 +161,9 @@ class DeskFlowServer:
             'key': key_data
         })
 
-    def on_local_copy(self, text):
-        self.data_network.send_message({
-            'type': 'clipboard_sync',
-            'text': text
-        })
+    def on_local_copy(self, payload):
+        payload['type'] = 'clipboard_sync'
+        self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
-        text = data.get('text', '')
-        self.clipboard.inject(text)
+        self.clipboard.inject(data)
