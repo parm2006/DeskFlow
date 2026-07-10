@@ -61,11 +61,15 @@ DeskFlow is a lightweight, wireless KVM utility written in Python. It allows two
 
 ```
 DeskFlow/
-├── config.json          # Screen layouts, IP addresses, port settings
+├── .agents/             # Custom Agent Rules & Skills
+├── known_hosts.json     # Saved IP/Port configurations
+├── features.md          # Comprehensive list of DeskFlow features
+├── plan.md              # Project roadmap and architecture
 ├── requirements.txt     # Python dependency file
 ├── run.py               # Main entry point (starts GUI)
 ├── app/
 │   ├── __init__.py
+│   ├── crypto.py        # Auto-generation of TLS Certificates
 │   ├── gui.py           # CustomTkinter interface
 │   ├── server.py        # Host server logic (inputs capture & send)
 │   ├── client.py        # Client receiver logic (inputs injector)

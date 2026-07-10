@@ -4,4 +4,6 @@ __pycache__/
 .env
 known_hosts.json  
 cert.pem
-key.pem  
+key.pem
+.agents/  
+ 
