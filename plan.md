@@ -128,7 +128,7 @@ DeskFlow/
 ### Backlog / Known Bugs
 - [x] App Close while Client active: If the DeskFlow GUI is closed via the 'X' button while control is switched to the client, the network connection isn't cleanly closed and the invisible `ctk_toplevel` overlay may linger or stop the mouse from working properly. Needs proper teardown/disconnect hooks on window destroy.
 - [x] Network Error Handling: If the Client attempts to connect with the correct IP but wrong port (or encounters other socket connection edge cases), the GUI crashes instead of showing a graceful error message. Need to implement robust exception handling for the connection process.
-- [ ] Rich Clipboard Support: Currently, clipboard synchronization only supports plaintext strings. Investigate OS-native APIs to support copying and pasting formatted text (RTF) and raw image data across the network.
+- [x] Rich Clipboard Support: Currently, clipboard synchronization only supports plaintext strings. Investigate OS-native APIs to support copying and pasting formatted text (RTF) and raw image data across the network.
 
 ### Quality of Life Improvements
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
