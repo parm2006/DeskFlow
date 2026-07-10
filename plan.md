@@ -61,8 +61,6 @@ DeskFlow is a lightweight, wireless KVM utility written in Python. It allows two
 
 ```
 DeskFlow/
-├── .agents/             # Custom Agent Rules & Skills
-├── known_hosts.json     # Saved IP/Port configurations
 ├── features.md          # Comprehensive list of DeskFlow features
 ├── plan.md              # Project roadmap and architecture
 ├── requirements.txt     # Python dependency file
