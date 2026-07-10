@@ -1,9 +1,13 @@
 import customtkinter as ctk
 import logging
+import json
+import os
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
 
 logger = logging.getLogger(__name__)
+
+KNOWN_HOSTS_FILE = "known_hosts.json"
 
 class DeskFlowGUI(ctk.CTk):
     def __init__(self):
@@ -14,6 +18,7 @@ class DeskFlowGUI(ctk.CTk):
         
         self.server = None
         self.client = None
+        self.known_hosts = self.load_known_hosts()
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
         self._init_overlay()
@@ -41,14 +46,19 @@ class DeskFlowGUI(ctk.CTk):
         # Client UI
         self.client_ip_label = ctk.CTkLabel(self.tab_client, text="Server IP:")
         self.client_ip_label.pack(pady=5)
-        self.client_ip_entry = ctk.CTkEntry(self.tab_client)
-        self.client_ip_entry.insert(0, "127.0.0.1")
+        
+        default_ip = self.known_hosts[0]['ip'] if self.known_hosts else "127.0.0.1"
+        ip_list = [h['ip'] for h in self.known_hosts] if self.known_hosts else ["127.0.0.1"]
+        
+        self.client_ip_entry = ctk.CTkComboBox(self.tab_client, values=ip_list, command=self.on_ip_select)
+        self.client_ip_entry.set(default_ip)
         self.client_ip_entry.pack(pady=5)
         
         self.client_port_label = ctk.CTkLabel(self.tab_client, text="Port:")
         self.client_port_label.pack(pady=5)
         self.client_port_entry = ctk.CTkEntry(self.tab_client)
-        self.client_port_entry.insert(0, "5000")
+        default_port = str(self.known_hosts[0]['port']) if self.known_hosts else "5000"
+        self.client_port_entry.insert(0, default_port)
         self.client_port_entry.pack(pady=5)
         
         self.client_connect_btn = ctk.CTkButton(self.tab_client, text="Connect", command=self.connect_client)
@@ -58,6 +68,37 @@ class DeskFlowGUI(ctk.CTk):
         self.status_label.grid(row=1, column=0, padx=20, pady=10)
         
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def load_known_hosts(self):
+        try:
+            if os.path.exists(KNOWN_HOSTS_FILE):
+                with open(KNOWN_HOSTS_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load known hosts: {e}")
+        return []
+
+    def save_known_host(self, ip, port):
+        # Remove if it already exists to move it to the top
+        self.known_hosts = [h for h in self.known_hosts if h['ip'] != ip or h['port'] != port]
+        self.known_hosts.insert(0, {'ip': ip, 'port': port})
+        # Keep only the last 10
+        self.known_hosts = self.known_hosts[:10]
+        
+        try:
+            with open(KNOWN_HOSTS_FILE, 'w') as f:
+                json.dump(self.known_hosts, f)
+            # Update combo box values
+            self.client_ip_entry.configure(values=[h['ip'] for h in self.known_hosts])
+        except Exception as e:
+            logger.error(f"Failed to save known host: {e}")
+
+    def on_ip_select(self, choice):
+        for host in self.known_hosts:
+            if host['ip'] == choice:
+                self.client_port_entry.delete(0, 'end')
+                self.client_port_entry.insert(0, str(host['port']))
+                break
 
     def start_server(self):
         port = int(self.server_port_entry.get())
@@ -88,6 +129,7 @@ class DeskFlowGUI(ctk.CTk):
         
         if self.client.connect(ip, port):
             self.status_label.configure(text=f"Status: Connected to {ip}:{port}", text_color="green")
+            self.save_known_host(ip, port)
         else:
             self.status_label.configure(text="Status: Connection failed", text_color="red")
 
