@@ -23,6 +23,16 @@ class InputHandler:
         self.center_x = 0
         self.center_y = 0
         self.ignore_next_move = False
+        
+        # Spatial Layout Configuration
+        self.server_edge = 'right'
+        self.client_edge = 'left'
+
+    def set_layout(self, server_edge=None, client_edge=None):
+        if server_edge:
+            self.server_edge = server_edge
+        if client_edge:
+            self.client_edge = client_edge
 
     def set_screen_size(self, w, h):
         self.screen_width = w
@@ -42,7 +52,9 @@ class InputHandler:
             except Exception as e:
                 logger.error(f"Callback error: {e}")
 
-    def start_edge_detection(self):
+    def start_edge_detection(self, edge=None):
+        if edge:
+            self.server_edge = edge
         self.stop()
         self.is_captured = False
         self.mouse_listener = MouseListener(on_move=self._on_move_edge)
@@ -87,15 +99,14 @@ class InputHandler:
             self.keyboard_listener = None
 
     def _on_move_edge(self, x, y):
-        # Trigger if we hit the right edge
-        if x >= self.screen_width - 2:
-            y_ratio = y / self.screen_height
-            self.trigger('edge_hit', 'right', y_ratio)
-            
-        # Trigger if we hit left edge
-        if x <= 0:
-            y_ratio = y / self.screen_height
-            self.trigger('edge_hit', 'left', y_ratio)
+        if self.server_edge == 'right' and x >= self.screen_width - 2:
+            self.trigger('edge_hit', 'right', y / self.screen_height)
+        elif self.server_edge == 'left' and x <= 0:
+            self.trigger('edge_hit', 'left', y / self.screen_height)
+        elif self.server_edge == 'top' and y <= 0:
+            self.trigger('edge_hit', 'top', x / self.screen_width)
+        elif self.server_edge == 'bottom' and y >= self.screen_height - 2:
+            self.trigger('edge_hit', 'bottom', x / self.screen_width)
 
     def _on_move_capture(self, x, y):
         if not self.is_captured:
@@ -109,10 +120,13 @@ class InputHandler:
             self.last_y = y
             self.trigger('mouse_move', dx, dy)
             
-            # Check if we hit the left edge of the virtual capture area
-            # Meaning we should return to the server screen
-            if x <= 0:
-                self.trigger('edge_hit', 'left', y)
+            # Check if we hit the boundary of the virtual capture area
+            # Meaning we should return to the server screen. 
+            # Note: For strict 'suppress' capture without overlay, we'd check server_edge here too.
+            # But since we use the Tkinter overlay for returning, we let the GUI overlay trigger the return 
+            # OR we just rely on the injected client mouse hitting the edge on the client side.
+            # Actually, the switch back is triggered purely by the Client hitting its edge (inject_move).
+            pass
 
     def _on_click_capture(self, x, y, button, pressed):
         if not self.is_captured:
@@ -145,11 +159,16 @@ class InputHandler:
     
     def inject_move(self, dx, dy):
         self.mouse.move(dx, dy)
-        # Check if client mouse hits left edge to return to server
+        # Check if client mouse hits its return edge to switch back to server
         x, y = self.mouse.position
-        if x <= 0:
-            y_ratio = y / self.screen_height
-            self.trigger('client_edge_hit', 'left', y_ratio)
+        if self.client_edge == 'left' and x <= 0:
+            self.trigger('client_edge_hit', 'left', y / self.screen_height)
+        elif self.client_edge == 'right' and x >= self.screen_width - 2:
+            self.trigger('client_edge_hit', 'right', y / self.screen_height)
+        elif self.client_edge == 'top' and y <= 0:
+            self.trigger('client_edge_hit', 'top', x / self.screen_width)
+        elif self.client_edge == 'bottom' and y >= self.screen_height - 2:
+            self.trigger('client_edge_hit', 'bottom', x / self.screen_width)
 
     def inject_position(self, x, y):
         self.mouse.position = (x, y)

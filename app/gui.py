@@ -14,7 +14,7 @@ class DeskFlowGUI(ctk.CTk):
         super().__init__()
         
         self.title("DeskFlow")
-        self.geometry("310x410")
+        self.geometry("310x560")
         self.resizable(False, False)
         
         self.server = None
@@ -42,9 +42,44 @@ class DeskFlowGUI(ctk.CTk):
         self.server_port_entry.pack(pady=5)
         
         self.server_password_label = ctk.CTkLabel(self.tab_server, text="Password:")
-        self.server_password_label.pack(pady=5)
+        self.server_password_label.pack(pady=2)
         self.server_password_entry = ctk.CTkEntry(self.tab_server, show="*")
-        self.server_password_entry.pack(pady=5)
+        self.server_password_entry.pack(pady=2)
+        
+        # Layout Selection
+        self.layout_label = ctk.CTkLabel(self.tab_server, text="Client Position:")
+        self.layout_label.pack(pady=5)
+        
+        self.layout_frame = ctk.CTkFrame(self.tab_server, fg_color="transparent")
+        self.layout_frame.pack(pady=5)
+        
+        self.layout_btns = {}
+        
+        # Center server block
+        self.server_btn = ctk.CTkButton(self.layout_frame, text="S", width=40, height=40, fg_color="#555555", state="disabled")
+        self.server_btn.grid(row=1, column=1, padx=5, pady=5)
+        
+        def set_layout(pos):
+            self.layout_position = pos
+            for p, btn in self.layout_btns.items():
+                if p == pos:
+                    btn.configure(text="C", fg_color="white", text_color="black")
+                else:
+                    btn.configure(text="", fg_color="#333333")
+                    
+        self.layout_btns['top'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('top'))
+        self.layout_btns['top'].grid(row=0, column=1, padx=5, pady=5)
+        
+        self.layout_btns['left'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('left'))
+        self.layout_btns['left'].grid(row=1, column=0, padx=5, pady=5)
+        
+        self.layout_btns['right'] = ctk.CTkButton(self.layout_frame, text="C", width=40, height=40, fg_color="white", text_color="black", command=lambda: set_layout('right'))
+        self.layout_btns['right'].grid(row=1, column=2, padx=5, pady=5)
+        
+        self.layout_btns['bottom'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('bottom'))
+        self.layout_btns['bottom'].grid(row=2, column=1, padx=5, pady=5)
+        
+        self.layout_position = 'right'
         
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
         self.server_start_btn.pack(pady=10)
@@ -123,7 +158,13 @@ class DeskFlowGUI(ctk.CTk):
         if self.server:
             self.server.stop()
             
-        self.server = DeskFlowServer(password=password, port=port, on_capture_start=self.show_overlay, on_capture_stop=self.hide_overlay)
+        self.server = DeskFlowServer(
+            password=password, 
+            port=port, 
+            layout_position=self.layout_position,
+            on_capture_start=self.show_overlay, 
+            on_capture_stop=self.hide_overlay
+        )
         self.server.network.register_callback('connected', self._on_server_client_connected)
         self.server.network.register_callback('disconnected', self._on_server_client_disconnected)
         screen_width = self.winfo_screenwidth()

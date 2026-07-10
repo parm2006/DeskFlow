@@ -6,11 +6,13 @@ from app.clipboard_handler import ClipboardHandler
 logger = logging.getLogger(__name__)
 
 class DeskFlowServer:
-    def __init__(self, password, port=5000, on_capture_start=None, on_capture_stop=None):
-        self.network = NetworkServer(password, '0.0.0.0', port)
-        self.input_handler = InputHandler()
+    def __init__(self, password, port=5000, layout_position='right', on_capture_start=None, on_capture_stop=None):
+        self.layout_position = layout_position
         self.on_capture_start = on_capture_start
         self.on_capture_stop = on_capture_stop
+        
+        self.network = NetworkServer(password, '0.0.0.0', port)
+        self.input_handler = InputHandler()
         
         # Setup network callbacks
         self.network.register_callback('connected', self.on_client_connected)
@@ -40,8 +42,13 @@ class DeskFlowServer:
         self.network.stop()
 
     def on_client_connected(self, data):
-        logger.info("Client connected, starting edge detection.")
-        self.input_handler.start_edge_detection()
+        logger.info(f"Client connected, starting edge detection for layout: {self.layout_position}")
+        # Send handshake layout config
+        self.network.send_message({
+            'type': 'layout_config',
+            'position': self.layout_position
+        })
+        self.input_handler.start_edge_detection(self.layout_position)
         self.clipboard.start()
 
     def on_client_disconnected(self, data):
@@ -51,37 +58,40 @@ class DeskFlowServer:
         self.input_handler.stop()
         self.clipboard.stop()
 
-    def on_edge_hit(self, direction, y_ratio):
-        if direction == 'right':
-            logger.info("Right edge hit. Switching to client.")
+    def on_edge_hit(self, direction, ratio):
+        if direction == self.layout_position:
+            logger.info(f"Hit {direction} edge. Switching to client.")
             self.network.send_message({
                 'type': 'switch',
-                'direction': 'right',
-                'y_ratio': y_ratio
+                'direction': direction,
+                'ratio': ratio
             })
             self.input_handler.stop() # Stop edge detection
             self.input_handler.start_keyboard_capture()
             if self.on_capture_start:
                 self.on_capture_start()
-        elif direction == 'left':
-            logger.info("Left edge hit while capturing. Switching back to server.")
-            self.input_handler.stop_keyboard_capture()
-            if self.on_capture_stop:
-                self.on_capture_stop()
-            self.input_handler.start_edge_detection()
-            y = int(y_ratio * self.input_handler.screen_height)
-            self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
 
     def on_switch_back(self, data):
-        # Client hit its left edge
+        # Client hit its return edge
         logger.info("Client signaled switch back.")
-        y_ratio = data.get('y_ratio', 0.5)
+        ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
             self.on_capture_stop()
-        self.input_handler.start_edge_detection()
-        y = int(y_ratio * self.input_handler.screen_height)
-        self.input_handler.inject_position(self.input_handler.screen_width - 10, y)
+            
+        # Warp the server mouse cleanly to the boundary
+        w = self.input_handler.screen_width
+        h = self.input_handler.screen_height
+        if self.layout_position == 'right':
+            self.input_handler.inject_position(w - 2, int(h * ratio))
+        elif self.layout_position == 'left':
+            self.input_handler.inject_position(2, int(h * ratio))
+        elif self.layout_position == 'top':
+            self.input_handler.inject_position(int(w * ratio), 2)
+        elif self.layout_position == 'bottom':
+            self.input_handler.inject_position(int(w * ratio), h - 2)
+            
+        self.input_handler.start_edge_detection(self.layout_position)
 
     def on_mouse_move(self, dx, dy):
         self.network.send_message({
