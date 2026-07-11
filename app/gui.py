@@ -23,6 +23,7 @@ class DeskFlowGUI(ctk.CTk):
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
         self.overlay = None
+        self.overlay_active = False
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
@@ -276,6 +277,7 @@ class DeskFlowGUI(ctk.CTk):
     def show_overlay(self):
         def _show():
             if self.overlay:
+                self.overlay_active = True
                 self.overlay.deiconify() # Show it
                 self.overlay.focus_force()
                 self.overlay.grab_set()
@@ -289,6 +291,7 @@ class DeskFlowGUI(ctk.CTk):
     def hide_overlay(self):
         def _hide():
             if self.overlay:
+                self.overlay_active = False
                 self.overlay.grab_release()
                 self.overlay.withdraw()
         self.after(0, _hide)
@@ -339,7 +342,7 @@ class DeskFlowGUI(ctk.CTk):
     def on_overlay_focus_out(self, event):
         # If the user opens the Snipping Tool (Win+Shift+S) or Alt-Tabs natively,
         # the overlay loses focus. We MUST return the cursor to the Server automatically.
-        if self.server and self.server.control_connected:
+        if self.overlay_active and self.server and self.server.control_connected:
             logger.info("Overlay lost focus (e.g. Snipping Tool). Switching back to Server.")
             self.server.on_switch_back({'ratio': 0.5})
 
