@@ -22,7 +22,7 @@ class DeskFlowGUI(ctk.CTk):
         self.known_hosts = self.load_known_hosts()
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
-        self._init_overlay()
+        self.overlay = None
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
@@ -158,6 +158,9 @@ class DeskFlowGUI(ctk.CTk):
         if self.server:
             self.server.stop()
             
+        if not self.overlay:
+            self._init_overlay()
+            
         self.server = DeskFlowServer(
             password=password, 
             port=port, 
@@ -243,7 +246,8 @@ class DeskFlowGUI(ctk.CTk):
         self.after(0, self.disconnect_client)
 
     def on_close(self):
-        self.hide_overlay()
+        if self.overlay:
+            self.hide_overlay()
         if self.server:
             self.server.stop()
         if self.client:
@@ -270,18 +274,20 @@ class DeskFlowGUI(ctk.CTk):
         self.warp_count = 0
 
     def show_overlay(self):
-        self.overlay.deiconify() # Show it
-        self.overlay.focus_force()
-        self.overlay.grab_set()
-        
-        # Initial position
-        self.last_x = self.overlay_center_x
-        self.last_y = self.overlay_center_y
-        self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+        if self.overlay:
+            self.overlay.deiconify() # Show it
+            self.overlay.focus_force()
+            self.overlay.grab_set()
+            
+            # Initial position
+            self.last_x = self.overlay_center_x
+            self.last_y = self.overlay_center_y
+            self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
 
     def hide_overlay(self):
-        self.overlay.grab_release()
-        self.overlay.withdraw()
+        if self.overlay:
+            self.overlay.grab_release()
+            self.overlay.withdraw()
 
     def on_overlay_motion(self, event):
         dx = event.x - self.last_x

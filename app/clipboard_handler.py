@@ -13,7 +13,7 @@ class ClipboardHandler:
         self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
-        self.ignore_next_sequence = False
+        self.is_injecting = False
 
     def start(self):
         self.is_running = True
@@ -41,7 +41,7 @@ class ClipboardHandler:
                 time.sleep(0.1)
         
     def inject(self, payload):
-        self.ignore_next_sequence = True
+        self.is_injecting = True
         
         text = payload.get('text')
         img_b64 = payload.get('image')
@@ -55,30 +55,37 @@ class ClipboardHandler:
             img_b64 = None
 
         if not text and not img_b64:
+            self.is_injecting = False
             return
 
-        for _ in range(5):
+        try:
+            for _ in range(5):
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    
+                    if text:
+                        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                        
+                    if img_b64:
+                        # Decompress zlib string into native DIB bytes
+                        dib_data = zlib.decompress(base64.b64decode(img_b64))
+                        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
+                        
+                    win32clipboard.CloseClipboard()
+                    logger.info("Injected rich clipboard payload")
+                    break
+                except Exception as e:
+                    logger.debug(f"Clipboard locked during inject, retrying... {e}")
+                    time.sleep(0.1)
+        finally:
+            # Let the OS settle, then fetch the updated sequence number
+            time.sleep(0.1)
             try:
-                win32clipboard.OpenClipboard()
-                win32clipboard.EmptyClipboard()
-                
-                if text:
-                    win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
-                    
-                if img_b64:
-                    # Decompress zlib string into native DIB bytes
-                    dib_data = zlib.decompress(base64.b64decode(img_b64))
-                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
-                    
-                win32clipboard.CloseClipboard()
-                logger.info("Injected rich clipboard payload")
-                
-                # Update sequence number immediately to prevent bounce back
                 self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
-                break
-            except Exception as e:
-                logger.debug(f"Clipboard locked during inject, retrying... {e}")
-                time.sleep(0.1)
+            except:
+                pass
+            self.is_injecting = False
 
     def _read_clipboard(self):
         payload = {}
@@ -106,14 +113,13 @@ class ClipboardHandler:
     def _poll_clipboard(self):
         while self.is_running:
             try:
+                if self.is_injecting:
+                    time.sleep(0.1)
+                    continue
                 seq = win32clipboard.GetClipboardSequenceNumber()
                 if seq != self.last_sequence_num:
                     self.last_sequence_num = seq
                     
-                    if self.ignore_next_sequence:
-                        self.ignore_next_sequence = False
-                        continue
-                        
                     payload = self._read_clipboard()
                     if payload and (payload.get('text') or payload.get('image')):
                         logger.info("Local rich clipboard change detected, forwarding...")
