@@ -6,4 +6,6 @@ known_hosts.json
 cert.pem
 key.pem
 .agents/  
- 
+build/
+dist/
+*.spec
