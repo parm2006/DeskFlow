@@ -33,10 +33,12 @@ class ClipboardHandler:
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
-                win32clipboard.EmptyClipboard()
-                win32clipboard.CloseClipboard()
-                logger.info("Clipboard securely wiped on disconnect")
-                break
+                try:
+                    win32clipboard.EmptyClipboard()
+                    logger.info("Clipboard securely wiped on disconnect")
+                    break
+                finally:
+                    win32clipboard.CloseClipboard()
             except Exception as e:
                 time.sleep(0.1)
         
@@ -62,19 +64,21 @@ class ClipboardHandler:
             for _ in range(5):
                 try:
                     win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    
-                    if text:
-                        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                    try:
+                        win32clipboard.EmptyClipboard()
                         
-                    if img_b64:
-                        # Decompress zlib string into native DIB bytes
-                        dib_data = zlib.decompress(base64.b64decode(img_b64))
-                        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
-                        
-                    win32clipboard.CloseClipboard()
-                    logger.info("Injected rich clipboard payload")
-                    break
+                        if text:
+                            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                            
+                        if img_b64:
+                            # Decompress zlib string into native DIB bytes
+                            dib_data = zlib.decompress(base64.b64decode(img_b64))
+                            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
+                            
+                        logger.info("Injected rich clipboard payload")
+                        break
+                    finally:
+                        win32clipboard.CloseClipboard()
                 except Exception as e:
                     logger.debug(f"Clipboard locked during inject, retrying... {e}")
                     time.sleep(0.1)
@@ -92,18 +96,19 @@ class ClipboardHandler:
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
-                
-                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
-                    payload['text'] = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
-                    
-                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
-                    dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
-                    # Compress native DIB bytes using python's built-in zlib
-                    compressed = zlib.compress(dib_data, level=6)
-                    payload['image'] = base64.b64encode(compressed).decode('utf-8')
-                    
-                win32clipboard.CloseClipboard()
-                return payload
+                try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                        payload['text'] = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+                        
+                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+                        dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+                        # Compress native DIB bytes using python's built-in zlib
+                        compressed = zlib.compress(dib_data, level=6)
+                        payload['image'] = base64.b64encode(compressed).decode('utf-8')
+                        
+                    return payload
+                finally:
+                    win32clipboard.CloseClipboard()
             except Exception as e:
                 logger.debug(f"Clipboard locked during read, retrying... {e}")
                 time.sleep(0.1)
