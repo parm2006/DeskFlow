@@ -133,7 +133,7 @@ DeskFlow/
 - [x] Known Hosts Autofill: Create a local `known_hosts.json` file (ignored by Git) to save successful IP/Port combinations. The Client GUI should automatically fill in the last used IP and Port, or provide a dropdown of previously successful connections.
 - [x] Disconnect Buttons & Dynamic UI Status: Add red Stop/Disconnect buttons to the GUI that dynamically appear upon connection and gracefully reset the UI across both computers when the socket is closed or drops.
 
-- [] increase speed of mouse on other side with screen ratio multipliers
+- [x] Resolution-based Mouse Speed Scaling: Automatically scales coordinates by resolution ratios between client and server, maintaining proportional cursor movement.
 
 ### Phase 6 — Spatial Layout Configuration
 - [x] Introduce visual 3x3 layout selector in the GUI to place Client (Top, Bottom, Left, Right).

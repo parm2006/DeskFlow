@@ -33,6 +33,8 @@ class DeskFlowClient:
 
         # Setup clipboard
         self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+        self.speed_scale_x = 1.0
+        self.speed_scale_y = 1.0
 
     def on_disconnected(self, data):
         logger.info("Disconnected from Server.")
@@ -82,7 +84,18 @@ class DeskFlowClient:
 
     def on_layout_config(self, data):
         server_pos = data.get('position', 'right')
-        logger.info(f"Received layout config. Client is positioned at server's {server_pos}")
+        server_w = data.get('server_width', 1920)
+        server_h = data.get('server_height', 1080)
+        
+        logger.info(f"Received layout config. Client is positioned at server's {server_pos} ({server_w}x{server_h})")
+        
+        # Calculate resolution scaling ratios
+        client_w = self.input_handler.screen_width
+        client_h = self.input_handler.screen_height
+        
+        self.speed_scale_x = client_w / server_w
+        self.speed_scale_y = client_h / server_h
+        logger.info(f"Resolution scaling factor calculated: X={self.speed_scale_x:.3f}, Y={self.speed_scale_y:.3f}")
         
         # Calculate our return edge (opposite of our position relative to server)
         # If client is to the right of server, return edge is left.
@@ -115,8 +128,8 @@ class DeskFlowClient:
             self.input_handler.inject_position(int(w * ratio), 2)
 
     def on_mouse_move(self, data):
-        dx = data.get('dx', 0)
-        dy = data.get('dy', 0)
+        dx = data.get('dx', 0) * self.speed_scale_x
+        dy = data.get('dy', 0) * self.speed_scale_y
         self.input_handler.inject_move(dx, dy)
 
     def on_mouse_click(self, data):
