@@ -83,7 +83,9 @@ class DeskFlowServer:
         # Send handshake layout config over control
         self.control_network.send_message({
             'type': 'layout_config',
-            'position': self.layout_position
+            'position': self.layout_position,
+            'server_width': self.input_handler.screen_width,
+            'server_height': self.input_handler.screen_height
         })
         self.input_handler.start_edge_detection(self.layout_position)
         self.clipboard.start()
