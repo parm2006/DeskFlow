@@ -153,3 +153,4 @@ DeskFlow/
 - [x] Optimized Clipboard Lock Duration: Moved all CPU-intensive operations (compression, decompression, base64 encoding/decoding) outside the `OpenClipboard()` and `CloseClipboard()` block to avoid blocking other processes.
 - [x] Content-Hash Sync-Loop Prevention: Implemented MD5 fingerprinting on clipboard text and images to detect and drop redundant echo payloads, resolving the clipboard sync storm/disconnect issue.
 - [x] Thread-Safe Tkinter Overlay Toggle: Wrapped fullscreen overlay toggles (`show_overlay` and `hide_overlay`) inside `self.after(0, ...)` to ensure safe execution on the main Tkinter thread, preventing deadlocks when events trigger from pynput or socket threads.
+- [x] Formatted Text Clipboard Sync: Integrated native Windows `HTML Format` and `Rich Text Format` (RTF) serialization into `ClipboardHandler` using zlib compression. Users can now copy styled tables, links, and documents across PCs.

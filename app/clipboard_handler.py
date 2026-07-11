@@ -17,6 +17,13 @@ class ClipboardHandler:
         self.is_injecting = False
         self.last_text_hash = None
         self.last_image_hash = None
+        try:
+            self.cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
+            self.cf_rtf = win32clipboard.RegisterClipboardFormat("Rich Text Format")
+        except Exception as e:
+            logger.error(f"Failed to register custom formats: {e}")
+            self.cf_html = None
+            self.cf_rtf = None
 
     def start(self):
         self.is_running = True
@@ -57,7 +64,10 @@ class ClipboardHandler:
         
         text = payload.get('text')
         img_b64 = payload.get('image')
+        html_b64 = payload.get('html')
+        rtf_b64 = payload.get('rtf')
         
+        # Validations
         if text and not isinstance(text, str):
             logger.warning("Text payload is not a string")
             text = None
@@ -72,7 +82,21 @@ class ClipboardHandler:
             logger.warning("Image payload exceeding 50MB limit")
             img_b64 = None
 
-        if not text and not img_b64:
+        if html_b64 and not isinstance(html_b64, str):
+            logger.warning("HTML payload is not a string")
+            html_b64 = None
+        elif html_b64 and len(html_b64) > 1024 * 1024 * 5:
+            logger.warning("HTML payload exceeding 5MB limit")
+            html_b64 = None
+
+        if rtf_b64 and not isinstance(rtf_b64, str):
+            logger.warning("RTF payload is not a string")
+            rtf_b64 = None
+        elif rtf_b64 and len(rtf_b64) > 1024 * 1024 * 5:
+            logger.warning("RTF payload exceeding 5MB limit")
+            rtf_b64 = None
+
+        if not text and not img_b64 and not html_b64 and not rtf_b64:
             self.is_injecting = False
             return
 
@@ -86,7 +110,21 @@ class ClipboardHandler:
                 self.is_injecting = False
                 return
 
-        # Record hashes to prevent forwarding back
+        html_data = None
+        if html_b64 and self.cf_html:
+            try:
+                html_data = zlib.decompress(base64.b64decode(html_b64))
+            except Exception as e:
+                logger.error(f"Error decompressing HTML: {e}")
+
+        rtf_data = None
+        if rtf_b64 and self.cf_rtf:
+            try:
+                rtf_data = zlib.decompress(base64.b64decode(rtf_b64))
+            except Exception as e:
+                logger.error(f"Error decompressing RTF: {e}")
+
+        # Record hashes of plain text and image to prevent forwarding back
         self.last_text_hash = self._get_hash(text)
         self.last_image_hash = self._get_hash(img_b64)
 
@@ -102,8 +140,14 @@ class ClipboardHandler:
                             
                         if dib_data:
                             win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
+
+                        if html_data:
+                            win32clipboard.SetClipboardData(self.cf_html, html_data)
+
+                        if rtf_data:
+                            win32clipboard.SetClipboardData(self.cf_rtf, rtf_data)
                             
-                        logger.info("Injected rich clipboard payload")
+                        logger.info("Injected rich clipboard payload (with formatting)")
                         break
                     finally:
                         win32clipboard.CloseClipboard()
@@ -123,6 +167,8 @@ class ClipboardHandler:
         payload = {}
         text_data = None
         dib_data = None
+        html_data = None
+        rtf_data = None
         
         for _ in range(5):
             try:
@@ -133,6 +179,12 @@ class ClipboardHandler:
                         
                     if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
                         dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+
+                    if self.cf_html and win32clipboard.IsClipboardFormatAvailable(self.cf_html):
+                        html_data = win32clipboard.GetClipboardData(self.cf_html)
+
+                    if self.cf_rtf and win32clipboard.IsClipboardFormatAvailable(self.cf_rtf):
+                        rtf_data = win32clipboard.GetClipboardData(self.cf_rtf)
                         
                     break
                 finally:
@@ -150,6 +202,22 @@ class ClipboardHandler:
                 payload['image'] = base64.b64encode(compressed).decode('utf-8')
             except Exception as e:
                 logger.error(f"Failed to compress DIB: {e}")
+
+        if html_data:
+            try:
+                # html_data is raw bytes (utf-8 with windows header)
+                compressed = zlib.compress(html_data, level=6)
+                payload['html'] = base64.b64encode(compressed).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Failed to compress HTML payload: {e}")
+
+        if rtf_data:
+            try:
+                # rtf_data is raw bytes (ansi RTF string bytes)
+                compressed = zlib.compress(rtf_data, level=6)
+                payload['rtf'] = base64.b64encode(compressed).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Failed to compress RTF payload: {e}")
                 
         return payload
 
