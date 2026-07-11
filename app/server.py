@@ -38,6 +38,7 @@ class DeskFlowServer:
 
         # Setup clipboard
         self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+        self.switching_to_client = False
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -88,6 +89,7 @@ class DeskFlowServer:
 
     def on_client_disconnected(self):
         logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
+        self.switching_to_client = False
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.stop()
@@ -95,6 +97,10 @@ class DeskFlowServer:
 
     def on_edge_hit(self, direction, ratio):
         if direction == self.layout_position:
+            if self.switching_to_client:
+                return
+            self.switching_to_client = True
+            
             logger.info(f"Hit {direction} edge. Switching to client.")
             self.control_network.send_message({
                 'type': 'switch',
@@ -109,6 +115,7 @@ class DeskFlowServer:
     def on_switch_back(self, data):
         # Client hit its return edge
         logger.info("Client signaled switch back.")
+        self.switching_to_client = False
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
