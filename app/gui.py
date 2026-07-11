@@ -274,20 +274,24 @@ class DeskFlowGUI(ctk.CTk):
         self.warp_count = 0
 
     def show_overlay(self):
-        if self.overlay:
-            self.overlay.deiconify() # Show it
-            self.overlay.focus_force()
-            self.overlay.grab_set()
-            
-            # Initial position
-            self.last_x = self.overlay_center_x
-            self.last_y = self.overlay_center_y
-            self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+        def _show():
+            if self.overlay:
+                self.overlay.deiconify() # Show it
+                self.overlay.focus_force()
+                self.overlay.grab_set()
+                
+                # Initial position
+                self.last_x = self.overlay_center_x
+                self.last_y = self.overlay_center_y
+                self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
+        self.after(0, _show)
 
     def hide_overlay(self):
-        if self.overlay:
-            self.overlay.grab_release()
-            self.overlay.withdraw()
+        def _hide():
+            if self.overlay:
+                self.overlay.grab_release()
+                self.overlay.withdraw()
+        self.after(0, _hide)
 
     def on_overlay_motion(self, event):
         dx = event.x - self.last_x
