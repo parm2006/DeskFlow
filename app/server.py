@@ -1,7 +1,8 @@
 import logging
 from app.network import NetworkServer
 from app.input_handler import InputHandler
-from app.clipboard_handler import ClipboardHandler
+from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
+from app.latest_wins_sender import LatestWinsSender
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class DeskFlowServer:
 
         # Setup clipboard
         self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+        self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.switching_to_client = False
         self.pressed_keys = set()
 
@@ -57,6 +59,7 @@ class DeskFlowServer:
         self.data_network.stop()
         self.input_handler.stop()
         self.clipboard.stop()
+        self.clipboard_sender.stop()
 
     def _on_socket_connected(self, sock_type):
         if sock_type == 'control':
@@ -195,9 +198,13 @@ class DeskFlowServer:
             'key': key_data
         })
 
-    def on_local_copy(self, payload):
+    def on_local_copy(self, snapshot):
+        return self.clipboard_sender.submit(snapshot)
+
+    def _send_clipboard_snapshot(self, snapshot):
+        payload = encode_clipboard_snapshot(snapshot)
         payload['type'] = 'clipboard_sync'
-        self.data_network.send_message(payload)
+        return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
         self.clipboard.inject(data)

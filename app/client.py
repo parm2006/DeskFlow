@@ -1,7 +1,8 @@
 import logging
 from app.network import NetworkClient
 from app.input_handler import InputHandler
-from app.clipboard_handler import ClipboardHandler
+from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
+from app.latest_wins_sender import LatestWinsSender
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class DeskFlowClient:
 
         # Setup clipboard
         self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+        self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.speed_scale_x = 1.0
         self.speed_scale_y = 1.0
 
@@ -40,6 +42,7 @@ class DeskFlowClient:
         logger.info("Disconnected from Server.")
         self.is_active = False
         self.clipboard.stop()
+        self.clipboard_sender.stop()
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -164,9 +167,13 @@ class DeskFlowClient:
                 'ratio': ratio
             })
 
-    def on_local_copy(self, payload):
+    def on_local_copy(self, snapshot):
+        return self.clipboard_sender.submit(snapshot)
+
+    def _send_clipboard_snapshot(self, snapshot):
+        payload = encode_clipboard_snapshot(snapshot)
         payload['type'] = 'clipboard_sync'
-        self.data_network.send_message(payload)
+        return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
         self.clipboard.inject(data)
