@@ -59,6 +59,9 @@ class NetworkNode:
                     break
                 
                 msg_dict = json.loads(data.decode('utf-8'))
+                if not isinstance(msg_dict, dict):
+                    logger.error("Received payload is not a JSON object/dictionary")
+                    break
                 event_type = msg_dict.get('type')
                 
                 if not self.authenticated:

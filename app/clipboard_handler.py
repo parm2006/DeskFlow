@@ -58,11 +58,17 @@ class ClipboardHandler:
         text = payload.get('text')
         img_b64 = payload.get('image')
         
-        if text and len(text) > 1024 * 1024 * 5:
+        if text and not isinstance(text, str):
+            logger.warning("Text payload is not a string")
+            text = None
+        elif text and len(text) > 1024 * 1024 * 5:
             logger.warning("Text payload exceeding 5MB limit")
             text = None
             
-        if img_b64 and len(img_b64) > 1024 * 1024 * 50:
+        if img_b64 and not isinstance(img_b64, str):
+            logger.warning("Image payload is not a string")
+            img_b64 = None
+        elif img_b64 and len(img_b64) > 1024 * 1024 * 50:
             logger.warning("Image payload exceeding 50MB limit")
             img_b64 = None
 
