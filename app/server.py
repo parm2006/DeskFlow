@@ -39,6 +39,7 @@ class DeskFlowServer:
         # Setup clipboard
         self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
         self.switching_to_client = False
+        self.pressed_keys = set()
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -86,10 +87,12 @@ class DeskFlowServer:
         })
         self.input_handler.start_edge_detection(self.layout_position)
         self.clipboard.start()
+        self.pressed_keys.clear()
 
     def on_client_disconnected(self):
         logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
         self.switching_to_client = False
+        self.pressed_keys.clear()
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.stop()
@@ -116,6 +119,7 @@ class DeskFlowServer:
         # Client hit its return edge
         logger.info("Client signaled switch back.")
         self.switching_to_client = False
+        self.pressed_keys.clear()
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
@@ -157,12 +161,33 @@ class DeskFlowServer:
         })
 
     def on_key_press(self, key_data):
+        val = key_data.get('value')
+        if val:
+            self.pressed_keys.add(val)
+
+        # Check emergency exit: Ctrl + Alt + Shift + Escape
+        has_ctrl = any(k in self.pressed_keys for k in ('ctrl', 'ctrl_l', 'ctrl_r'))
+        has_alt = any(k in self.pressed_keys for k in ('alt', 'alt_l', 'alt_r', 'alt_gr'))
+        has_shift = any(k in self.pressed_keys for k in ('shift', 'shift_l', 'shift_r'))
+        has_esc = val in ('esc', 'escape')
+        
+        if has_ctrl and has_alt and has_shift and has_esc:
+            logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
+            self.pressed_keys.clear()
+            self.control_network.disconnect()
+            self.data_network.disconnect()
+            return
+
         self.control_network.send_message({
             'type': 'key_press',
             'key': key_data
         })
 
     def on_key_release(self, key_data):
+        val = key_data.get('value')
+        if val in self.pressed_keys:
+            self.pressed_keys.discard(val)
+            
         self.control_network.send_message({
             'type': 'key_release',
             'key': key_data
