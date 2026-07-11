@@ -149,3 +149,4 @@ DeskFlow/
 - [x] Replaced `pyperclip` with native OS APIs (`pywin32`) to sync uncompressed images via heavily optimized `zlib` background byte streams.
 - [x] Fixed Clipboard Sync Loop: Introduced an `is_injecting` state lock to prevent clipboard sync events from triggering a recursive loop (bounce-back storm) when setting the local clipboard.
 - [x] Deferred Overlay Initialization: Modified the GUI to only initialize the fullscreen topmost overlay on Server startup. This prevents the Client from maintaining a transparent topmost window that blocks screenshot/snipping tools.
+- [x] Fixed Clipboard Lock Leak: Wrapped all operations after `OpenClipboard()` in nested `try...finally` blocks to guarantee `CloseClipboard()` is always called, resolving input-hook freezes and deadlocks during screenshots.
