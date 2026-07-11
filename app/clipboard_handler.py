@@ -4,6 +4,7 @@ import logging
 import base64
 import zlib
 import win32clipboard
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,8 @@ class ClipboardHandler:
         self.is_running = False
         self.thread = None
         self.is_injecting = False
+        self.last_text_hash = None
+        self.last_image_hash = None
 
     def start(self):
         self.is_running = True
@@ -28,6 +31,13 @@ class ClipboardHandler:
     def stop(self):
         self.is_running = False
         self.wipe_clipboard()
+
+    def _get_hash(self, data):
+        if not data:
+            return None
+        if isinstance(data, str):
+            data = data.encode('utf-8', errors='ignore')
+        return hashlib.md5(data).hexdigest()
 
     def wipe_clipboard(self):
         for _ in range(5):
@@ -60,6 +70,20 @@ class ClipboardHandler:
             self.is_injecting = False
             return
 
+        # Decompress/decode outside the clipboard lock!
+        dib_data = None
+        if img_b64:
+            try:
+                dib_data = zlib.decompress(base64.b64decode(img_b64))
+            except Exception as e:
+                logger.error(f"Error decompressing image: {e}")
+                self.is_injecting = False
+                return
+
+        # Record hashes to prevent forwarding back
+        self.last_text_hash = self._get_hash(text)
+        self.last_image_hash = self._get_hash(img_b64)
+
         try:
             for _ in range(5):
                 try:
@@ -70,9 +94,7 @@ class ClipboardHandler:
                         if text:
                             win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
                             
-                        if img_b64:
-                            # Decompress zlib string into native DIB bytes
-                            dib_data = zlib.decompress(base64.b64decode(img_b64))
+                        if dib_data:
                             win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
                             
                         logger.info("Injected rich clipboard payload")
@@ -93,27 +115,37 @@ class ClipboardHandler:
 
     def _read_clipboard(self):
         payload = {}
+        text_data = None
+        dib_data = None
+        
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
                 try:
                     if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
-                        payload['text'] = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+                        text_data = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
                         
                     if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
                         dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
-                        # Compress native DIB bytes using python's built-in zlib
-                        compressed = zlib.compress(dib_data, level=6)
-                        payload['image'] = base64.b64encode(compressed).decode('utf-8')
                         
-                    return payload
+                    break
                 finally:
                     win32clipboard.CloseClipboard()
             except Exception as e:
                 logger.debug(f"Clipboard locked during read, retrying... {e}")
                 time.sleep(0.1)
                 
-        return None
+        if text_data:
+            payload['text'] = text_data
+        if dib_data:
+            try:
+                # Compress native DIB bytes outside of clipboard lock
+                compressed = zlib.compress(dib_data, level=6)
+                payload['image'] = base64.b64encode(compressed).decode('utf-8')
+            except Exception as e:
+                logger.error(f"Failed to compress DIB: {e}")
+                
+        return payload
 
     def _poll_clipboard(self):
         while self.is_running:
@@ -126,9 +158,26 @@ class ClipboardHandler:
                     self.last_sequence_num = seq
                     
                     payload = self._read_clipboard()
-                    if payload and (payload.get('text') or payload.get('image')):
-                        logger.info("Local rich clipboard change detected, forwarding...")
-                        self.on_clipboard_change(payload)
-            except Exception:
-                pass
+                    if payload:
+                        text = payload.get('text')
+                        image = payload.get('image')
+                        
+                        text_hash = self._get_hash(text)
+                        image_hash = self._get_hash(image)
+                        
+                        # Only send if there is actual content AND it is different from last sent/injected
+                        is_new_text = text and text_hash != self.last_text_hash
+                        is_new_image = image and image_hash != self.last_image_hash
+                        
+                        if is_new_text or is_new_image:
+                            logger.info("Local rich clipboard change detected, forwarding...")
+                            # Update hashes
+                            if is_new_text:
+                                self.last_text_hash = text_hash
+                            if is_new_image:
+                                self.last_image_hash = image_hash
+                                
+                            self.on_clipboard_change(payload)
+            except Exception as e:
+                logger.error(f"Error in poll clipboard: {e}")
             time.sleep(0.5)

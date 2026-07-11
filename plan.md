@@ -150,3 +150,6 @@ DeskFlow/
 - [x] Fixed Clipboard Sync Loop: Introduced an `is_injecting` state lock to prevent clipboard sync events from triggering a recursive loop (bounce-back storm) when setting the local clipboard.
 - [x] Deferred Overlay Initialization: Modified the GUI to only initialize the fullscreen topmost overlay on Server startup. This prevents the Client from maintaining a transparent topmost window that blocks screenshot/snipping tools.
 - [x] Fixed Clipboard Lock Leak: Wrapped all operations after `OpenClipboard()` in nested `try...finally` blocks to guarantee `CloseClipboard()` is always called, resolving input-hook freezes and deadlocks during screenshots.
+- [x] Optimized Clipboard Lock Duration: Moved all CPU-intensive operations (compression, decompression, base64 encoding/decoding) outside the `OpenClipboard()` and `CloseClipboard()` block to avoid blocking other processes.
+- [x] Content-Hash Sync-Loop Prevention: Implemented MD5 fingerprinting on clipboard text and images to detect and drop redundant echo payloads, resolving the clipboard sync storm/disconnect issue.
+- [x] Thread-Safe Tkinter Overlay Toggle: Wrapped fullscreen overlay toggles (`show_overlay` and `hide_overlay`) inside `self.after(0, ...)` to ensure safe execution on the main Tkinter thread, preventing deadlocks when events trigger from pynput or socket threads.
