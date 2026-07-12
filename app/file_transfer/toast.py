@@ -1,7 +1,44 @@
+from dataclasses import dataclass
+
 import customtkinter as ctk
 
 from app.input_geometry import windows_work_area
 from .status import TransferPhase
+
+
+TOAST_WIDTH = 360
+TOAST_HEIGHT = 104
+
+
+@dataclass(frozen=True)
+class ToastView:
+    title: str
+    details: str
+    hide_after_ms: int | None
+
+
+def toast_view(status):
+    titles = {
+        TransferPhase.PREPARING: "Preparing files",
+        TransferPhase.COMPRESSING: "Compressing files",
+        TransferPhase.TRANSFERRING: "Transferring files",
+        TransferPhase.VERIFYING: "Verifying transfer",
+        TransferPhase.COMPLETED: "Ready in Explorer",
+        TransferPhase.FAILED: "Transfer failed",
+        TransferPhase.CANCELLED: "Transfer cancelled",
+    }
+    hide_delays = {
+        TransferPhase.COMPLETED: 3000,
+        TransferPhase.CANCELLED: 4000,
+        TransferPhase.FAILED: 8000,
+    }
+    if status.phase is TransferPhase.FAILED:
+        details = "DeskFlow could not finish the network transfer."
+    elif status.phase is TransferPhase.COMPLETED:
+        details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · finish any Windows prompt"
+    else:
+        details = _progress_details(status)
+    return ToastView(titles[status.phase], details[:80], hide_delays.get(status.phase))
 
 
 class TransferToast:
@@ -14,22 +51,29 @@ class TransferToast:
         self.window.withdraw()
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
-        self.window.geometry("360x150")
-        self.title = ctk.CTkLabel(self.window, text="", font=ctk.CTkFont(size=15, weight="bold"), anchor="w")
-        self.title.pack(fill="x", padx=16, pady=(14, 4))
-        self.progress = ctk.CTkProgressBar(self.window)
-        self.progress.pack(fill="x", padx=16, pady=4)
-        self.details = ctk.CTkLabel(self.window, text="", anchor="w")
-        self.details.pack(fill="x", padx=16, pady=2)
-        self.cancel = ctk.CTkButton(self.window, text="Cancel", width=76, height=28, command=self._cancel)
-        self.cancel.pack(anchor="e", padx=16, pady=(4, 12))
+        self.window.configure(fg_color=("#f1f1f1", "#242424"))
+        self.window.geometry(f"{TOAST_WIDTH}x{TOAST_HEIGHT}")
+        self.window.grid_columnconfigure(0, weight=1)
+        self.title = ctk.CTkLabel(
+            self.window, text="", font=ctk.CTkFont(size=14, weight="bold"), anchor="w", height=20,
+        )
+        self.title.grid(row=0, column=0, sticky="ew", padx=(14, 6), pady=(9, 1))
+        self.cancel = ctk.CTkButton(
+            self.window, text="Cancel", width=68, height=24, command=self._cancel,
+        )
+        self.cancel.grid(row=0, column=1, padx=(4, 12), pady=(8, 1))
+        self.progress = ctk.CTkProgressBar(self.window, height=8)
+        self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=5)
+        self.details = ctk.CTkLabel(self.window, text="", anchor="w", height=18, font=ctk.CTkFont(size=12))
+        self.details.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(1, 8))
 
     def show(self, status):
         if self._hide_after is not None:
             self.root.after_cancel(self._hide_after)
             self._hide_after = None
         self.job_id = status.job_id
-        self.title.configure(text=f"{status.phase.value.title()} · {status.label}")
+        view = toast_view(status)
+        self.title.configure(text=view.title)
         percent = status.percent
         self.progress.configure(mode="indeterminate" if percent is None else "determinate")
         if percent is None:
@@ -37,26 +81,33 @@ class TransferToast:
         else:
             self.progress.stop()
             self.progress.set(percent / 100.0)
-        self.details.configure(text=_details(status))
+        self.details.configure(text=view.details)
         self.cancel.configure(state="disabled" if status.is_terminal else "normal")
         left, top, right, bottom = windows_work_area()
-        self.window.geometry(f"360x150+{right - 376}+{bottom - 166}")
+        self.window.geometry(
+            f"{TOAST_WIDTH}x{TOAST_HEIGHT}+{right - TOAST_WIDTH - 16}+{bottom - TOAST_HEIGHT - 16}"
+        )
         self.window.deiconify()
-        if status.phase is TransferPhase.COMPLETED:
-            self._hide_after = self.root.after(3000, self.window.withdraw)
-        elif status.phase is TransferPhase.CANCELLED:
-            self._hide_after = self.root.after(5000, self.window.withdraw)
+        self.window.lift()
+        if view.hide_after_ms is not None:
+            self._hide_after = self.root.after(view.hide_after_ms, self._hide)
+
+    def raise_if_visible(self):
+        if self.window.state() != "withdrawn":
+            self.window.lift()
+
+    def _hide(self):
+        self._hide_after = None
+        self.window.withdraw()
 
     def _cancel(self):
         if self.job_id:
             self.on_cancel(self.job_id)
 
 
-def _details(status):
+def _progress_details(status):
     done = _size(status.bytes_done)
     total = _size(status.bytes_total)
-    if status.phase is TransferPhase.FAILED:
-        return "Transfer failed. Check the DeskFlow log."
     if status.bytes_per_second > 0:
         speed = f"{_size(status.bytes_per_second)}/s"
         eta = "" if status.eta_seconds is None else f" · about {max(1, round(status.eta_seconds))}s left"

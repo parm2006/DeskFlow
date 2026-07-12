@@ -300,6 +300,7 @@ class DeskFlowGUI(ctk.CTk):
                 self.overlay.deiconify() # Show it
                 self.overlay.focus_force()
                 self.overlay.grab_set()
+                self.transfer_toast.raise_if_visible()
                 
                 # Initial position
                 self.last_x = self.overlay_center_x
