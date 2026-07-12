@@ -20,12 +20,16 @@ class TransferToastViewTests(unittest.TestCase):
                 status = TransferStatus("job", phase, "file.bin", 50, 100)
                 self.assertIsNotNone(toast_view(status).hide_after_ms)
 
+    def test_confirmed_cancellation_hides_immediately(self):
+        status = TransferStatus("job", TransferPhase.CANCELLED, "file.bin", 50, 100)
+        self.assertEqual(toast_view(status).hide_after_ms, 0)
+
     def test_long_private_label_is_not_rendered_in_compact_title(self):
         status = TransferStatus("job", TransferPhase.TRANSFERRING, "x" * 500, 50, 100, 25)
 
         view = toast_view(status)
 
-        self.assertEqual(view.title, "Transferring files")
+        self.assertEqual(view.title, "Network transfer")
         self.assertNotIn("x", view.title)
         self.assertLessEqual(len(view.details), 80)
 

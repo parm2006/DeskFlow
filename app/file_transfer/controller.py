@@ -38,6 +38,9 @@ class TransferController:
             error_code,
         )
         with self._lock:
+            previous = self._statuses.get(job_id)
+            if previous is not None and previous.is_terminal:
+                return previous
             self._statuses[job_id] = status
             subscribers = tuple(self._subscribers)
         for callback in subscribers:

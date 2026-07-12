@@ -17,6 +17,19 @@ def work_area_geometry(rect):
     return f"{right - left}x{bottom - top}{left:+d}{top:+d}"
 
 
+def scaled_toast_geometry(work_area, physical_screen, tk_screen, width, height, margin=16):
+    left, top, right, bottom = work_area
+    physical_width, physical_height = physical_screen
+    tk_width, tk_height = tk_screen
+    scale_x = tk_width / physical_width
+    scale_y = tk_height / physical_height
+    scaled_right = round(right * scale_x)
+    scaled_bottom = round(bottom * scale_y)
+    x = scaled_right - width - margin
+    y = scaled_bottom - height - margin
+    return f"{width}x{height}{x:+d}{y:+d}"
+
+
 def windows_work_area():
     import ctypes
     from ctypes import wintypes
