@@ -10,6 +10,10 @@ class TransferPhase(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    WAITING_FOR_EXPLORER = "waiting_for_explorer"
+    PASTING = "pasting"
+    VERIFYING_RESULT = "verifying_result"
+    CANCELLING = "cancelling"
 
 
 _TERMINAL_PHASES = {
@@ -31,7 +35,7 @@ class TransferStatus:
 
     @property
     def percent(self):
-        if self.bytes_total <= 0:
+        if self.phase in {TransferPhase.PREPARING, TransferPhase.WAITING_FOR_EXPLORER} or self.bytes_total <= 0:
             return None
         return min(100.0, self.bytes_done * 100.0 / self.bytes_total)
 

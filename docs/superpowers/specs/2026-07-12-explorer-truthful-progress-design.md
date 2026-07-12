@@ -20,14 +20,14 @@ The toast-positioning code also mixes Win32 physical work-area coordinates with 
 
 ## Chosen design
 
-### Two measured progress stages
+### Explorer-only user-facing progress
 
-Keep one job identity and two explicit counters:
+Keep one job identity and two internal counters:
 
-- **Receiving securely**: unique uncompressed bytes received and verified by DeskFlow. This is network/staging progress.
+- **Network receipt**: unique uncompressed bytes received and verified by DeskFlow. Keep this for diagnostics, integrity, and rate control; do not use it as the toast percentage.
 - **Copying in Explorer**: unique bytes returned to Explorer from `IStream.Read`. This is destination-consumption progress.
 
-When Explorer has not requested content, both toasts show `Waiting for Windows Explorer` with an indeterminate bar. Once reads begin, both show the Explorer-consumption percentage, measured throughput, and ETA. Never interpolate progress from configured bandwidth or file size alone.
+Before Explorer requests content, both toasts show `Waiting for Windows Explorer` with an indeterminate bar and no percentage, throughput, or ETA. This includes network transfer, staging, verification, and any conflict dialog. Once reads begin, both show only the Explorer-consumption percentage, measured throughput, and ETA. Never expose network progress as the main copy bar or interpolate progress from configured bandwidth or file size alone.
 
 Track unique byte intervals per manifest item because Explorer may seek, clone a stream, or reread a range. Count the union of returned ranges; never add duplicate reads twice. Directories contribute no content bytes.
 
@@ -78,7 +78,7 @@ Do not derive placement from the primary screen width, global screen ratios, or 
 
 ## State model
 
-`PREPARING -> RECEIVING -> WAITING_FOR_EXPLORER -> PASTING -> VERIFYING_RESULT -> COMPLETED`
+`PREPARING -> WAITING_FOR_EXPLORER -> PASTING -> VERIFYING_RESULT -> COMPLETED`
 
 Any nonterminal phase may enter `CANCELLING`, followed by `CANCELLED`. Protocol, validation, disk, or COM errors enter `FAILED`. Terminal states are immutable.
 

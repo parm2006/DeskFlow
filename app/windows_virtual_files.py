@@ -276,16 +276,20 @@ class CallbackStream:
     _com_interfaces_ = [pythoncom.IID_IStream]
     _public_methods_ = FileBackedStream._public_methods_
 
-    def __init__(self, read_range, size, position=0):
+    def __init__(self, read_range, size, position=0, on_read=None):
         self.read_range = read_range
         self.size = size
         self.position = position
+        self.on_read = on_read
         self.lock = threading.Lock()
 
     def Read(self, count):
         with self.lock:
-            data = self.read_range(self.position, min(count, self.size - self.position))
+            offset = self.position
+            data = self.read_range(offset, min(count, self.size - offset))
             self.position += len(data)
+            if data and self.on_read is not None:
+                self.on_read(offset, len(data))
             return data
 
     def Write(self, data):
@@ -330,11 +334,11 @@ class CallbackStream:
         return (None, pythoncom.STGTY_STREAM, self.size, 0, 0, 0, 0, 0, 0, None)
 
     def Clone(self):
-        return open_callback_stream(self.read_range, self.size, self.position)
+        return open_callback_stream(self.read_range, self.size, self.position, self.on_read)
 
 
-def open_callback_stream(read_range, size, position=0):
-    return util.wrap(CallbackStream(read_range, size, position), pythoncom.IID_IStream)
+def open_callback_stream(read_range, size, position=0, on_read=None):
+    return util.wrap(CallbackStream(read_range, size, position, on_read), pythoncom.IID_IStream)
 
 
 def build_file_group_descriptor(files: Iterable[VirtualFile]):

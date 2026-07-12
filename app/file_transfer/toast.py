@@ -25,19 +25,25 @@ def toast_view(status):
         TransferPhase.COMPRESSING: "Compressing files",
         TransferPhase.TRANSFERRING: "Network transfer",
         TransferPhase.VERIFYING: "Verifying transfer",
-        TransferPhase.COMPLETED: "Ready in Explorer",
+        TransferPhase.COMPLETED: "Copy complete",
         TransferPhase.FAILED: "Transfer failed",
         TransferPhase.CANCELLED: "Transfer cancelled",
+        TransferPhase.WAITING_FOR_EXPLORER: "Waiting for Windows Explorer",
+        TransferPhase.PASTING: "Copying in Windows Explorer",
+        TransferPhase.VERIFYING_RESULT: "Confirming Windows copy",
+        TransferPhase.CANCELLING: "Cancelling transfer",
     }
     hide_delays = {
         TransferPhase.COMPLETED: 3000,
         TransferPhase.CANCELLED: 0,
         TransferPhase.FAILED: 8000,
     }
-    if status.phase is TransferPhase.FAILED:
+    if status.phase is TransferPhase.WAITING_FOR_EXPLORER:
+        details = "Choose any Windows file prompt to continue"
+    elif status.phase is TransferPhase.FAILED:
         details = "DeskFlow could not finish the network transfer."
     elif status.phase is TransferPhase.COMPLETED:
-        details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · finish any Windows prompt"
+        details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · Windows finished reading files"
     else:
         details = _progress_details(status)
     return ToastView(titles[status.phase], details[:80], hide_delays.get(status.phase))

@@ -13,7 +13,57 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
-    def test_reports_speed_from_actual_received_bytes(self):
+    def test_paste_progress_updates_are_rate_limited(self):
+        size = 2 * 1024 * 1024
+        item = FileItem("large.bin", ItemType.FILE, size, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        times = iter((0.0, 0.0, 0.0, 0.01, 0.01))
+        controller = TransferController()
+        observed = []
+        controller.subscribe(observed.append)
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller, clock=lambda: next(times))
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 0, 1)
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 1, 1)
+
+        pasting = [status for status in observed if status.phase is TransferPhase.PASTING]
+        self.assertEqual(len(pasting), 1)
+        self.assertEqual(pasting[0].bytes_done, 1)
+
+    def test_stream_read_never_blocks_on_peer_progress_send(self):
+        content = b"nonblocking"
+        item = FileItem("safe.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        manifest = Manifest.create([item])
+
+        class BlockingLane:
+            def __init__(self):
+                self.callbacks = {}
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def register_callback(self, kind, callback):
+                self.callbacks.setdefault(kind, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                if metadata["type"] == "paste_progress":
+                    self.entered.set()
+                    self.release.wait(1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            lane = BlockingLane()
+            receiver.attach(lane)
+            receiver.accept_manifest(manifest.to_wire())
+            started = time.monotonic()
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 0, 1)
+            elapsed = time.monotonic() - started
+            self.assertTrue(lane.entered.wait(1))
+            lane.release.set()
+
+        self.assertLess(elapsed, 0.05)
+
+    def test_network_receipt_does_not_drive_user_facing_progress(self):
         content = b"actual bytes"
         item = FileItem("speed.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
         manifest = Manifest.create([item])
@@ -27,7 +77,10 @@ class TransferReceiverTests(unittest.TestCase):
                 "compressed": False, "original_size": len(content),
             }, content)
 
-            self.assertEqual(controller.status(manifest.job_id).bytes_per_second, len(content) / 2)
+            status = controller.status(manifest.job_id)
+            self.assertEqual(status.phase, TransferPhase.WAITING_FOR_EXPLORER)
+            self.assertEqual(status.bytes_done, 0)
+            self.assertEqual(status.bytes_per_second, 0)
             receiver.cancel_job(manifest.job_id)
 
 
@@ -48,10 +101,32 @@ class TransferReceiverTests(unittest.TestCase):
             receiver.complete_file(manifest.job_id, "safe.txt")
             receiver.complete_job(manifest.job_id)
 
-        self.assertEqual(observed[0].phase, TransferPhase.PREPARING)
-        self.assertIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
-        self.assertIn(TransferPhase.VERIFYING, [status.phase for status in observed])
-        self.assertEqual(observed[-1].phase, TransferPhase.COMPLETED)
+        self.assertEqual(observed[0].phase, TransferPhase.WAITING_FOR_EXPLORER)
+        self.assertNotIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
+        self.assertNotIn(TransferPhase.VERIFYING, [status.phase for status in observed])
+        self.assertEqual(observed[-1].phase, TransferPhase.WAITING_FOR_EXPLORER)
+
+    def test_explorer_reads_drive_paste_progress_and_fallback_completion(self):
+        content = b"explorer consumed bytes"
+        item = FileItem("copy.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id, "relative_path": item.relative_path, "offset": 0,
+                "compressed": False, "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.complete_job(manifest.job_id)
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 0, 8)
+            self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.PASTING)
+            self.assertEqual(controller.status(manifest.job_id).bytes_done, 8)
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 8, len(content) - 8)
+
+        self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.COMPLETED)
+        self.assertEqual(controller.status(manifest.job_id).bytes_done, len(content))
 
     def test_manifest_chunks_and_completion_publish_verified_file(self):
         content = b"DeskFlow received bytes"

@@ -1,4 +1,6 @@
 from pathlib import Path
+import logging
+import queue
 import threading
 import time
 
@@ -7,6 +9,10 @@ from .models import ItemType, Manifest
 from .staging import StagedFile
 from .validation import validate_manifest, validate_relative_path
 from .status import TransferPhase
+from .range_coverage import RangeCoverage
+
+
+logger = logging.getLogger(__name__)
 
 
 class TransferAbortedError(OSError):
@@ -20,9 +26,14 @@ class TransferReceiver:
         self.clock = clock
         self.lane = None
         self._jobs = {}
+        self._progress_queue = queue.Queue()
+        self._progress_worker = None
 
     def attach(self, lane):
         self.lane = lane
+        if self._progress_worker is None:
+            self._progress_worker = threading.Thread(target=self._send_progress, daemon=True)
+            self._progress_worker.start()
         lane.register_callback(
             "manifest", lambda metadata, payload: self.accept_manifest(metadata["manifest"])
         )
@@ -58,8 +69,16 @@ class TransferReceiver:
             "error": None,
             "bytes_received": 0,
             "started": self.clock(),
+            "coverage": {
+                item.relative_path: RangeCoverage(item.size)
+                for item in manifest.items if item.item_type is ItemType.FILE
+            },
+            "paste_started": None,
+            "network_verified": False,
+            "last_progress_bytes": -1,
+            "last_progress_time": 0.0,
         }
-        self._update(manifest.job_id, TransferPhase.PREPARING)
+        self._update_paste(manifest.job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
         return manifest
 
     def accept_chunk(self, metadata, payload):
@@ -87,7 +106,6 @@ class TransferReceiver:
                 job["staged"][relative_path] = staged
             staged.write(metadata["offset"], decoded)
             job["bytes_received"] += len(decoded)
-            self._update(job_id, TransferPhase.TRANSFERRING)
             job["condition"].notify_all()
 
     def complete_file(self, job_id, relative_path):
@@ -106,10 +124,31 @@ class TransferReceiver:
         }
         if set(job["completed"]) != expected_files:
             raise ValueError("job completed before every file was verified")
-        self._update(job_id, TransferPhase.VERIFYING)
-        self._update(job_id, TransferPhase.COMPLETED)
+        job["network_verified"] = True
+        covered = self._paste_covered(job)
+        if covered == job["manifest"].total_size:
+            self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
+        elif covered:
+            self._publish_paste_progress(job_id, TransferPhase.PASTING, covered, force=True)
+        else:
+            self._update_paste(job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
         if self.lane is not None:
             self.lane.send({"type": "job_verified", "job_id": job_id})
+
+    def record_stream_read(self, job_id, relative_path, offset, count):
+        normalized = validate_relative_path(relative_path)
+        job = self._jobs[job_id]
+        coverage = job["coverage"][normalized]
+        coverage.add(offset, count)
+        covered = self._paste_covered(job)
+        if job["paste_started"] is None:
+            job["paste_started"] = self.clock()
+        phase = (
+            TransferPhase.COMPLETED
+            if job["network_verified"] and covered == job["manifest"].total_size
+            else TransferPhase.PASTING
+        )
+        self._publish_paste_progress(job_id, phase, covered, force=phase is TransferPhase.COMPLETED)
 
     def read_range(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
@@ -140,25 +179,57 @@ class TransferReceiver:
                 staged.abort()
             job["staged"].clear()
             job["error"] = "transfer was cancelled"
-            self._update(job_id, TransferPhase.CANCELLED)
+            self._update_paste(job_id, TransferPhase.CANCELLED, self._paste_covered(job), 0.0)
             job["condition"].notify_all()
         return True
 
-    def _update(self, job_id, phase):
+    def _update_paste(self, job_id, phase, bytes_done, speed):
         if self.controller is None:
             return
         job = self._jobs[job_id]
         manifest = job["manifest"]
-        elapsed = max(0.0, self.clock() - job["started"]) if job["bytes_received"] else 0.0
-        speed = job["bytes_received"] / elapsed if elapsed > 0 else 0.0
         self.controller.update(
             job_id,
             phase,
             _manifest_label(manifest),
-            job["bytes_received"],
-            manifest.total_size,
+            bytes_done,
+            manifest.total_size if phase is TransferPhase.PASTING or phase is TransferPhase.COMPLETED else 0,
             speed,
         )
+
+    def _publish_paste_progress(self, job_id, phase, covered, force=False):
+        job = self._jobs[job_id]
+        now = self.clock()
+        elapsed = max(0.0, now - job["paste_started"]) if job["paste_started"] is not None else 0.0
+        speed = covered / elapsed if elapsed > 0 else 0.0
+        enough_bytes = covered - job["last_progress_bytes"] >= 1 << 20
+        enough_time = now - job["last_progress_time"] >= 0.1
+        if not (force or job["last_progress_bytes"] < 0 or enough_bytes or enough_time):
+            return
+        job["last_progress_bytes"] = covered
+        job["last_progress_time"] = now
+        self._update_paste(job_id, phase, covered, speed)
+        if self.lane is not None:
+            self._progress_queue.put({
+                "type": "paste_progress",
+                "job_id": job_id,
+                "phase": phase.value,
+                "bytes_done": covered,
+                "bytes_total": job["manifest"].total_size,
+                "bytes_per_second": speed,
+            })
+
+    def _send_progress(self):
+        while True:
+            metadata = self._progress_queue.get()
+            try:
+                self.lane.send(metadata)
+            except Exception:
+                logger.exception("Could not send Explorer paste progress")
+
+    @staticmethod
+    def _paste_covered(job):
+        return sum(coverage.covered for coverage in job["coverage"].values())
 
     def cancel_all(self, reason):
         for job_id in tuple(self._jobs):
