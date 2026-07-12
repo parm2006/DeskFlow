@@ -1,13 +1,15 @@
 from dataclasses import dataclass
+import logging
 
 import customtkinter as ctk
 
-from app.input_geometry import windows_work_area, scaled_toast_geometry
+from app.input_geometry import place_windows_window_in_work_area
 from .status import TransferPhase
 
 
 TOAST_WIDTH = 360
 TOAST_HEIGHT = 104
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -83,16 +85,11 @@ class TransferToast:
             self.progress.set(percent / 100.0)
         self.details.configure(text=view.details)
         self.cancel.configure(state="disabled" if status.is_terminal else "normal")
-        import ctypes
-        physical_screen = (
-            ctypes.windll.user32.GetSystemMetrics(0),
-            ctypes.windll.user32.GetSystemMetrics(1),
-        )
-        tk_screen = (self.root.winfo_screenwidth(), self.root.winfo_screenheight())
-        self.window.geometry(scaled_toast_geometry(
-            windows_work_area(), physical_screen, tk_screen, TOAST_WIDTH, TOAST_HEIGHT,
-        ))
+        self.window.geometry(f"{TOAST_WIDTH}x{TOAST_HEIGHT}")
         self.window.deiconify()
+        self.window.update_idletasks()
+        target = place_windows_window_in_work_area(self.window.winfo_id())
+        logger.debug("Transfer toast positioned in physical work-area rectangle %s", target)
         self.window.lift()
         if view.hide_after_ms is not None:
             self._hide_after = self.root.after(view.hide_after_ms, self._hide)
