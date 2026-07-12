@@ -21,6 +21,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | SUPERSEDED
 
 ## Reconciliation log
 
+- **2026-07-12**: First Plan 001 manual check exposed an untyped 64-bit `SetWindowPos` call (`WinError 1400`) that also prevented hide scheduling. Added typed WinAPI boundaries, placement-failure isolation, and serialized ordinary TLS writes after a concurrent Ctrl+click produced `BAD_RECORD_MAC`. Manual recheck remains.
 - **2026-07-12**: Split the approved design into a safe DPI fix, Python-measurable Explorer progress, and an isolated native COM lifecycle bridge. Destination-toast hiding remains deferred to issue #2.
 
 ## Considered and rejected
