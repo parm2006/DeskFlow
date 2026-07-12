@@ -50,9 +50,9 @@ Extend `CallbackStream` and `open_callback_stream` with an optional `on_read(off
 
 **Verify**: stream tests pass.
 
-### Step 2: Separate network verification from Explorer completion
+### Step 2: Separate hidden network state from Explorer completion
 
-Add explicit phases: `RECEIVING`, `WAITING_FOR_EXPLORER`, `PASTING`, `VERIFYING_RESULT`, and `CANCELLING`. Network hash verification transitions to waiting instead of terminal completion. `build_virtual_file_set` connects each stream read to a receiver-owned consumption tracker for the manifest job.
+Add explicit phases: `WAITING_FOR_EXPLORER`, `PASTING`, `VERIFYING_RESULT`, and `CANCELLING`. Network receipt remains internally measurable but must not drive a visible percentage. From the user's first toast until Explorer reads data, show waiting with an indeterminate bar. Network hash verification remains nonterminal. `build_virtual_file_set` connects each stream read to a receiver-owned consumption tracker for the manifest job.
 
 Directories contribute zero bytes. A zero-byte-only job may complete consumption immediately but must still wait for the lifecycle result in Plan 003 when that capability is available.
 
@@ -68,7 +68,7 @@ The source sender registers a callback and applies only monotonic, matching-tota
 
 ### Step 4: Drive both toasts from Explorer progress
 
-Update toast copy for receiving, waiting, and copying phases. Both peers show the same Explorer-consumption percentage once reads start. Waiting uses an indeterminate bar. Do not infer progress from configured bandwidth. Preserve measured network progress as an earlier labeled stage.
+Update toast copy for waiting and copying phases. Both peers show the same Explorer-consumption percentage once reads start. Waiting uses an indeterminate bar with no bytes, speed, or ETA. Do not show network send/receive percentage or infer progress from configured bandwidth.
 
 Until Plan 003 lands, full unique read coverage is the fallback completion signal. Record that fallback distinction in logs and tests; user-facing text may say `Copied by Explorer` only after full coverage.
 

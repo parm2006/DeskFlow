@@ -22,14 +22,24 @@ class TransferToastViewTests(unittest.TestCase):
         self.assertEqual(callbacks[0][0], 0)
         self.assertEqual(toast._hide_after, "timer")
 
-    def test_verified_network_transfer_is_described_as_ready_not_pasted(self):
+    def test_full_explorer_consumption_is_described_as_copy_complete(self):
         status = TransferStatus("job", TransferPhase.COMPLETED, "large-file.bin", 100, 100)
 
         view = toast_view(status)
 
-        self.assertEqual(view.title, "Ready in Explorer")
+        self.assertEqual(view.title, "Copy complete")
         self.assertIn("100 B / 100 B", view.details)
+        self.assertNotIn("prompt", view.details)
         self.assertEqual(view.hide_after_ms, 3000)
+
+    def test_waiting_for_explorer_shows_no_network_numbers(self):
+        status = TransferStatus(
+            "job", TransferPhase.WAITING_FOR_EXPLORER, "file.bin",
+            64 * 1024 * 1024, 64 * 1024 * 1024, 10 * 1024 * 1024,
+        )
+        view = toast_view(status)
+        self.assertEqual(view.title, "Waiting for Windows Explorer")
+        self.assertEqual(view.details, "Choose any Windows file prompt to continue")
 
     def test_every_terminal_state_has_a_hide_deadline(self):
         for phase in (TransferPhase.COMPLETED, TransferPhase.FAILED, TransferPhase.CANCELLED):

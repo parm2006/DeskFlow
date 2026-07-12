@@ -16,6 +16,7 @@ from app.windows_virtual_files import (
     parse_file_group_descriptor,
     open_file_stream,
     open_callback_stream,
+    CallbackStream,
 )
 
 
@@ -161,6 +162,34 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         self.assertEqual(stream.Read(7), b"growing")
         self.assertEqual(stream.Read(6), b" bytes")
         self.assertEqual(reads, [(0, 7), (7, 6)])
+
+    def test_callback_stream_reports_only_successfully_returned_ranges(self):
+        content = b"abcdefghij"
+        consumed = []
+        stream = CallbackStream(
+            lambda offset, count: content[offset:offset + count],
+            len(content),
+            on_read=lambda offset, count: consumed.append((offset, count)),
+        )
+
+        self.assertEqual(stream.Read(4), b"abcd")
+        stream.Seek(2, 0)
+        self.assertEqual(stream.Read(3), b"cde")
+        self.assertEqual(consumed, [(0, 4), (2, 3)])
+
+    def test_callback_stream_clone_preserves_progress_callback(self):
+        content = b"abcdefghij"
+        consumed = []
+        stream = CallbackStream(
+            lambda offset, count: content[offset:offset + count],
+            len(content),
+            position=4,
+            on_read=lambda offset, count: consumed.append((offset, count)),
+        )
+
+        clone = stream.Clone()
+        self.assertEqual(clone.Read(3), b"efg")
+        self.assertEqual(consumed, [(4, 3)])
 
 
 if __name__ == "__main__":

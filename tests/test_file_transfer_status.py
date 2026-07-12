@@ -26,6 +26,11 @@ class TransferStatusTests(unittest.TestCase):
         self.assertFalse(preparing.is_terminal)
         self.assertTrue(completed.is_terminal)
 
+    def test_waiting_for_explorer_has_no_determinate_progress(self):
+        waiting = TransferStatus("job", TransferPhase.WAITING_FOR_EXPLORER, "file", 0, 0)
+        self.assertIsNone(waiting.percent)
+        self.assertFalse(waiting.is_terminal)
+
 
 if __name__ == "__main__":
     unittest.main()

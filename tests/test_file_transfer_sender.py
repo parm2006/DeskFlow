@@ -31,6 +31,13 @@ class LoopbackLane:
         elif metadata["type"] == "job_verified":
             for callback in self.callbacks.get("job_verified", ()):
                 callback(metadata, payload)
+        elif metadata["type"] == "paste_progress":
+            for callback in self.callbacks.get("paste_progress", ()):
+                callback(metadata, payload)
+
+    def emit(self, metadata, payload=b""):
+        for callback in self.callbacks.get(metadata["type"], ()):
+            callback(metadata, payload)
 
 
 class TransferSenderTests(unittest.TestCase):
@@ -48,7 +55,7 @@ class TransferSenderTests(unittest.TestCase):
             completed = Path(receive_directory) / "completed" / manifest.job_id / "report.txt"
             self.assertEqual(completed.read_bytes(), source_path.read_bytes())
 
-    def test_reports_preparing_transfer_progress_and_completion(self):
+    def test_waits_for_destination_owned_explorer_progress_after_network_verification(self):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as receive_directory:
             source_path = Path(source_directory) / "report.txt"
             source_path.write_bytes(b"progress bytes")
@@ -61,15 +68,51 @@ class TransferSenderTests(unittest.TestCase):
             controller.subscribe(observed.append)
             receiver = TransferReceiver(Path(receive_directory))
 
-            TransferSender(LoopbackLane(receiver), controller=controller).send_job(
+            lane = LoopbackLane(receiver)
+            TransferSender(lane, controller=controller).send_job(
                 manifest, {"report.txt": source}
             )
 
-            self.assertEqual(observed[0].phase, TransferPhase.PREPARING)
-            self.assertIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
-            self.assertIn(TransferPhase.VERIFYING, [status.phase for status in observed])
+            self.assertEqual(observed[0].phase, TransferPhase.WAITING_FOR_EXPLORER)
+            self.assertNotIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
+            self.assertNotIn(TransferPhase.VERIFYING, [status.phase for status in observed])
+            self.assertEqual(observed[-1].phase, TransferPhase.WAITING_FOR_EXPLORER)
+            lane.emit({
+                "type": "paste_progress", "job_id": manifest.job_id,
+                "phase": "completed", "bytes_done": source.size,
+                "bytes_total": source.size, "bytes_per_second": source.size,
+            })
             self.assertEqual(observed[-1].phase, TransferPhase.COMPLETED)
             self.assertEqual(observed[-1].bytes_done, source.size)
+
+    def test_rejects_impossible_or_regressing_remote_paste_progress(self):
+        controller = TransferController()
+        lane = type("Lane", (), {"callbacks": {}, "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb)})()
+        sender = TransferSender(lane, controller=controller)
+        sender._paste_jobs["job"] = ("file.bin", 100)
+        controller.update("job", TransferPhase.PASTING, "file.bin", 50, 100, 10)
+
+        self.assertFalse(sender._on_paste_progress({
+            "job_id": "job", "phase": "pasting", "bytes_done": 40,
+            "bytes_total": 100, "bytes_per_second": 10,
+        }, b""))
+        self.assertFalse(sender._on_paste_progress({
+            "job_id": "job", "phase": "pasting", "bytes_done": 60,
+            "bytes_total": 101, "bytes_per_second": 10,
+        }, b""))
+        self.assertEqual(controller.status("job").bytes_done, 50)
+
+    def test_late_network_verification_cannot_reset_active_explorer_progress(self):
+        controller = TransferController()
+        lane = type("Lane", (), {"callbacks": {}, "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb)})()
+        sender = TransferSender(lane, controller=controller)
+        manifest = Manifest.create([FileItem("file.bin", ItemType.FILE, 100, 1, "0" * 64)])
+        controller.update(manifest.job_id, TransferPhase.PASTING, "file.bin", 40, 100, 10)
+
+        sender._waiting(manifest, "file.bin")
+
+        self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.PASTING)
+        self.assertEqual(controller.status(manifest.job_id).bytes_done, 40)
 
 
 if __name__ == "__main__":

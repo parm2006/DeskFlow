@@ -30,6 +30,9 @@ def build_virtual_file_set(manifest, receiver):
                     job_id, path, offset, count
                 ),
                 stream_size,
+                on_read=lambda offset, count, path=path: receiver.record_stream_read(
+                    job_id, path, offset, count
+                ),
             )
 
         files.append(VirtualFile(relative_path, size, None, open_stream=open_stream))
