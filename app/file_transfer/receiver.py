@@ -7,6 +7,10 @@ from .staging import StagedFile
 from .validation import validate_manifest, validate_relative_path
 
 
+class TransferAbortedError(OSError):
+    pass
+
+
 class TransferReceiver:
     def __init__(self, staging_root):
         self.staging_root = Path(staging_root)
@@ -15,6 +19,9 @@ class TransferReceiver:
     def attach(self, lane):
         lane.register_callback(
             "manifest", lambda metadata, payload: self.accept_manifest(metadata["manifest"])
+        )
+        lane.register_callback(
+            "disconnected", lambda metadata, payload: self.cancel_all("file lane disconnected")
         )
         lane.register_callback(
             "chunk", lambda metadata, payload: self.accept_chunk(metadata, payload)
@@ -36,6 +43,7 @@ class TransferReceiver:
             "staged": {},
             "condition": threading.Condition(),
             "completed": {},
+            "error": None,
         }
         return manifest
 
@@ -88,11 +96,27 @@ class TransferReceiver:
                         source.seek(offset)
                         return source.read(min(count, item.size - offset))
                 staged = job["staged"].get(normalized)
+                if job["error"] is not None:
+                    raise TransferAbortedError(job["error"])
                 if staged is not None and staged.received_size > offset:
                     return staged.read_available(offset, count)
                 job["condition"].wait()
 
     def cancel_job(self, job_id):
-        job = self._jobs.pop(job_id)
-        for staged in job["staged"].values():
-            staged.abort()
+        job = self._jobs[job_id]
+        with job["condition"]:
+            for staged in job["staged"].values():
+                staged.abort()
+            job["staged"].clear()
+            job["error"] = "transfer was cancelled"
+            job["condition"].notify_all()
+
+    def cancel_all(self, reason):
+        for job_id in tuple(self._jobs):
+            job = self._jobs[job_id]
+            with job["condition"]:
+                for staged in job["staged"].values():
+                    staged.abort()
+                job["staged"].clear()
+                job["error"] = reason
+                job["condition"].notify_all()

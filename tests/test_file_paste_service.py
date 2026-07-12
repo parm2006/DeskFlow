@@ -33,8 +33,8 @@ class RecordingSender:
     def __init__(self):
         self.jobs = []
 
-    def send_job(self, manifest, sources):
-        self.jobs.append((manifest.job_id, tuple(sources)))
+    def send_job(self, manifest, sources, announce_manifest=True):
+        self.jobs.append((manifest.job_id, tuple(sources), announce_manifest))
 
 
 class Manifest:
@@ -95,7 +95,7 @@ class FilePasteServiceTests(unittest.TestCase):
 
         service.on_manifest_ack({"job_id": "A"})
 
-        self.assertEqual(sender.jobs, [("A", ("a.txt",))])
+        self.assertEqual(sender.jobs, [("A", ("a.txt",), False)])
 
 
 if __name__ == "__main__":

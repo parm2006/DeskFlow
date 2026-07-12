@@ -63,7 +63,11 @@ class FilePasteService:
         if outgoing is None:
             return False
         manifest, sources = outgoing
-        self.run_async(lambda: self.sender.send_job(manifest, sources))
+        self.run_async(
+            lambda: self.sender.send_job(
+                manifest, sources, announce_manifest=False
+            )
+        )
         return True
 
     @staticmethod

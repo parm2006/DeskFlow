@@ -256,8 +256,14 @@ class DeskFlowGUI(ctk.CTk):
         self.destroy()
 
     def _init_overlay(self):
+        from app.input_geometry import windows_work_area, work_area_geometry
+
         self.overlay = ctk.CTkToplevel(self)
-        self.overlay.attributes("-fullscreen", True)
+        left, top, right, bottom = windows_work_area()
+        self.overlay.geometry(work_area_geometry((left, top, right, bottom)))
+        self.overlay.overrideredirect(True)
+        self.overlay_center_x = (right - left) // 2
+        self.overlay_center_y = (bottom - top) // 2
         self.overlay.attributes("-alpha", 0.01) # Almost invisible
         self.overlay.config(cursor="none") # Hide host cursor
         self.overlay.attributes("-topmost", True)

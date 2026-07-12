@@ -92,6 +92,8 @@ class _FileLane:
             except OSError:
                 pass
             sock.close()
+            for callback in self._callbacks.get("disconnected", ()):
+                callback({"type": "disconnected"}, b"")
 
 
 class FileLaneClient(_FileLane):

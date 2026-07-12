@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
+from app.file_transfer.receiver import TransferAbortedError
 
 
 class TransferReceiverTests(unittest.TestCase):
@@ -74,6 +75,29 @@ class TransferReceiverTests(unittest.TestCase):
 
             self.assertEqual(result, [b"stre"])
             receiver.cancel_job(manifest.job_id)
+
+    def test_cancel_wakes_blocked_reader_with_error(self):
+        item = FileItem("blocked.bin", ItemType.FILE, 4, 1, hashlib.sha256(b"data").hexdigest())
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            errors = []
+
+            def read():
+                try:
+                    receiver.read_range(manifest.job_id, item.relative_path, 0, 4)
+                except Exception as error:
+                    errors.append(error)
+
+            reader = threading.Thread(target=read)
+            reader.start()
+            time.sleep(0.02)
+            receiver.cancel_job(manifest.job_id)
+            reader.join(1)
+
+            self.assertFalse(reader.is_alive())
+            self.assertIsInstance(errors[0], TransferAbortedError)
 
 
 if __name__ == "__main__":
