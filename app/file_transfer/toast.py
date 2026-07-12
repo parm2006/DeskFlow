@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import customtkinter as ctk
 
-from app.input_geometry import windows_work_area
+from app.input_geometry import windows_work_area, scaled_toast_geometry
 from .status import TransferPhase
 
 
@@ -21,7 +21,7 @@ def toast_view(status):
     titles = {
         TransferPhase.PREPARING: "Preparing files",
         TransferPhase.COMPRESSING: "Compressing files",
-        TransferPhase.TRANSFERRING: "Transferring files",
+        TransferPhase.TRANSFERRING: "Network transfer",
         TransferPhase.VERIFYING: "Verifying transfer",
         TransferPhase.COMPLETED: "Ready in Explorer",
         TransferPhase.FAILED: "Transfer failed",
@@ -29,7 +29,7 @@ def toast_view(status):
     }
     hide_delays = {
         TransferPhase.COMPLETED: 3000,
-        TransferPhase.CANCELLED: 4000,
+        TransferPhase.CANCELLED: 0,
         TransferPhase.FAILED: 8000,
     }
     if status.phase is TransferPhase.FAILED:
@@ -83,10 +83,15 @@ class TransferToast:
             self.progress.set(percent / 100.0)
         self.details.configure(text=view.details)
         self.cancel.configure(state="disabled" if status.is_terminal else "normal")
-        left, top, right, bottom = windows_work_area()
-        self.window.geometry(
-            f"{TOAST_WIDTH}x{TOAST_HEIGHT}+{right - TOAST_WIDTH - 16}+{bottom - TOAST_HEIGHT - 16}"
+        import ctypes
+        physical_screen = (
+            ctypes.windll.user32.GetSystemMetrics(0),
+            ctypes.windll.user32.GetSystemMetrics(1),
         )
+        tk_screen = (self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        self.window.geometry(scaled_toast_geometry(
+            windows_work_area(), physical_screen, tk_screen, TOAST_WIDTH, TOAST_HEIGHT,
+        ))
         self.window.deiconify()
         self.window.lift()
         if view.hide_after_ms is not None:

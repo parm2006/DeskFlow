@@ -1,5 +1,6 @@
 from pathlib import Path
 import threading
+import time
 
 from .compression import decode_chunk
 from .models import ItemType, Manifest
@@ -13,9 +14,10 @@ class TransferAbortedError(OSError):
 
 
 class TransferReceiver:
-    def __init__(self, staging_root, controller=None):
+    def __init__(self, staging_root, controller=None, clock=time.monotonic):
         self.staging_root = Path(staging_root)
         self.controller = controller
+        self.clock = clock
         self.lane = None
         self._jobs = {}
 
@@ -55,6 +57,7 @@ class TransferReceiver:
             "completed": {},
             "error": None,
             "bytes_received": 0,
+            "started": self.clock(),
         }
         self._update(manifest.job_id, TransferPhase.PREPARING)
         return manifest
@@ -146,12 +149,15 @@ class TransferReceiver:
             return
         job = self._jobs[job_id]
         manifest = job["manifest"]
+        elapsed = max(0.0, self.clock() - job["started"]) if job["bytes_received"] else 0.0
+        speed = job["bytes_received"] / elapsed if elapsed > 0 else 0.0
         self.controller.update(
             job_id,
             phase,
             _manifest_label(manifest),
             job["bytes_received"],
             manifest.total_size,
+            speed,
         )
 
     def cancel_all(self, reason):

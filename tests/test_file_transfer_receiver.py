@@ -13,6 +13,24 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_reports_speed_from_actual_received_bytes(self):
+        content = b"actual bytes"
+        item = FileItem("speed.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        times = iter((10.0, 12.0, 14.0))
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller, clock=lambda: next(times))
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id, "relative_path": "speed.bin", "offset": 0,
+                "compressed": False, "original_size": len(content),
+            }, content)
+
+            self.assertEqual(controller.status(manifest.job_id).bytes_per_second, len(content) / 2)
+            receiver.cancel_job(manifest.job_id)
+
+
     def test_reports_received_bytes_and_verified_completion(self):
         content = b"verified progress"
         item = FileItem("safe.txt", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
