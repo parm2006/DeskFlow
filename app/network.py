@@ -5,6 +5,7 @@ import struct
 import logging
 import ssl
 import time
+import hashlib
 from app.crypto import ensure_certificates, CERT_FILE, KEY_FILE
 
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,14 @@ class NetworkNode:
         if event_type not in self.callbacks:
             self.callbacks[event_type] = []
         self.callbacks[event_type].append(callback)
+
+    def peer_certificate_fingerprint(self):
+        if self.sock is None or not hasattr(self.sock, "getpeercert"):
+            raise RuntimeError("there is no live TLS peer certificate")
+        certificate = self.sock.getpeercert(binary_form=True)
+        if not certificate:
+            raise RuntimeError("there is no live TLS peer certificate")
+        return hashlib.sha256(certificate).hexdigest()
 
     def trigger_callbacks(self, event_type, data):
         for cb in self.callbacks.get(event_type, []):

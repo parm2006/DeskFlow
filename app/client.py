@@ -1,5 +1,16 @@
 import logging
+import threading
+import os
+from pathlib import Path
 from app.network import NetworkClient
+from app.file_transfer.transport import FileLaneClient
+from app.file_transfer.paste_coordinator import PasteCoordinator
+from app.file_transfer.hotkey import WindowsPasteHotkeyMonitor
+from app.file_transfer.paste_service import FilePasteService
+from app.file_transfer.publisher import VirtualPastePublisher
+from app.file_transfer.receiver import TransferReceiver
+from app.file_transfer.selection import snapshot_selection
+from app.file_transfer.sender import TransferSender
 from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
 from app.latest_wins_sender import LatestWinsSender
@@ -10,6 +21,10 @@ class DeskFlowClient:
     def __init__(self, password):
         self.control_network = NetworkClient(password)
         self.data_network = NetworkClient(password)
+        self.file_network = FileLaneClient()
+        self.file_receiver = TransferReceiver(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'DeskFlow' / 'transfers' / 'client')
+        self.file_receiver.attach(self.file_network)
+        self.file_publisher = VirtualPastePublisher()
         self.input_handler = InputHandler()
         self.is_active = False
         self.control_connected = False
@@ -24,6 +39,13 @@ class DeskFlowClient:
         self.control_network.register_callback('key_press', self.on_key_press)
         self.control_network.register_callback('key_release', self.on_key_release)
         self.control_network.register_callback('disconnected', self.on_disconnected)
+        self.control_network.register_callback('file_lane_offer', self.on_file_lane_offer)
+        self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
+        self.control_network.register_callback('file_manifest_request', self.on_file_manifest_request)
+        self.control_network.register_callback('file_manifest_response', self.on_file_manifest_response)
+        self.control_network.register_callback('file_manifest_failed', self.on_file_manifest_failed)
+        self.control_network.register_callback('file_manifest_ack', self.on_file_manifest_ack)
+        self.control_network.register_callback('file_paste_trigger', lambda data: self.file_paste_service.request_paste())
         
         # Setup data network callbacks
         self.data_network.register_callback('clipboard_sync', self.on_remote_copy)
@@ -33,7 +55,17 @@ class DeskFlowClient:
         self.input_handler.register_callback('client_edge_hit', self.on_client_edge_hit)
 
         # Setup clipboard
-        self.clipboard = ClipboardHandler(on_clipboard_change=self.on_local_copy)
+        self.clipboard = ClipboardHandler(
+            on_clipboard_change=self.on_local_copy,
+            on_file_availability=self.on_local_file_availability,
+        )
+        self.paste_coordinator = PasteCoordinator(self._request_remote_file_paste)
+        self.hotkey_monitor = WindowsPasteHotkeyMonitor(self.paste_coordinator)
+        self.file_paste_service = FilePasteService(
+            self.control_network, self.file_receiver, self.file_publisher,
+            TransferSender(self.file_network),
+            lambda: snapshot_selection(self.clipboard.read_file_selection()),
+        )
         self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.speed_scale_x = 1.0
         self.speed_scale_y = 1.0
@@ -43,11 +75,15 @@ class DeskFlowClient:
         self.is_active = False
         self.clipboard.stop()
         self.clipboard_sender.stop()
+        self.file_network.close()
+        self.paste_coordinator.reset()
+        self.hotkey_monitor.stop()
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
 
     def connect(self, host, port, callback):
+        self.host = host
         self.control_connected = False
         self.data_connected = False
         self.connect_error = None
@@ -57,6 +93,7 @@ class DeskFlowClient:
                 return # Already errored out
             if self.control_connected and self.data_connected:
                 self.clipboard.start()
+                self.hotkey_monitor.start()
                 if callback: callback(True, None)
 
         def _control_callback(success, err):
@@ -84,6 +121,24 @@ class DeskFlowClient:
     def disconnect(self):
         self.control_network.disconnect()
         self.data_network.disconnect()
+        self.file_network.close()
+
+    def on_file_lane_offer(self, data):
+        def connect_file_lane():
+            try:
+                self._connect_file_lane(data)
+            except Exception as error:
+                logger.error(f"Secure file lane connection failed: {error}")
+
+        threading.Thread(target=connect_file_lane, daemon=True).start()
+
+    def _connect_file_lane(self, data):
+        port = data.get('port')
+        token = data.get('token')
+        if not isinstance(port, int) or not isinstance(token, str):
+            raise ValueError("file-lane offer is malformed")
+        fingerprint = self.control_network.peer_certificate_fingerprint()
+        self.file_network.connect(self.host, port, fingerprint, token)
 
     def on_layout_config(self, data):
         server_pos = data.get('position', 'right')
@@ -177,3 +232,27 @@ class DeskFlowClient:
 
     def on_remote_copy(self, data):
         self.clipboard.inject(data)
+
+    def on_local_file_availability(self, available):
+        return self.control_network.send_message({
+            'type': 'file_clipboard_available',
+            'available': available is True,
+        })
+
+    def on_remote_file_availability(self, data):
+        self.paste_coordinator.set_remote_files_available(data.get('available') is True)
+
+    def _request_remote_file_paste(self):
+        return self.file_paste_service.request_paste()
+
+    def on_file_manifest_request(self, data):
+        self.file_paste_service.on_manifest_request(data)
+
+    def on_file_manifest_response(self, data):
+        self.file_paste_service.on_manifest_response(data)
+
+    def on_file_manifest_failed(self, data):
+        self.file_paste_service.on_manifest_failed(data)
+
+    def on_file_manifest_ack(self, data):
+        self.file_paste_service.on_manifest_ack(data)
