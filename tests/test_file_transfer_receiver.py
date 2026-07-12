@@ -8,9 +8,33 @@ from pathlib import Path
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.receiver import TransferAbortedError
+from app.file_transfer.controller import TransferController
+from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_reports_received_bytes_and_verified_completion(self):
+        content = b"verified progress"
+        item = FileItem("safe.txt", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        observed = []
+        controller.subscribe(observed.append)
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id, "relative_path": "safe.txt", "offset": 0,
+                "compressed": False, "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, "safe.txt")
+            receiver.complete_job(manifest.job_id)
+
+        self.assertEqual(observed[0].phase, TransferPhase.PREPARING)
+        self.assertIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
+        self.assertIn(TransferPhase.VERIFYING, [status.phase for status in observed])
+        self.assertEqual(observed[-1].phase, TransferPhase.COMPLETED)
+
     def test_manifest_chunks_and_completion_publish_verified_file(self):
         content = b"DeskFlow received bytes"
         item = FileItem("folder/report.txt", ItemType.FILE, len(content), 123, hashlib.sha256(content).hexdigest())

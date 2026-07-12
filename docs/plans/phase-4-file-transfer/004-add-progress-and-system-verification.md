@@ -29,15 +29,15 @@ Background transfer needs visible, trustworthy state without extra interaction. 
 
 ## Scope
 
-In scope: non-focus-stealing progress toast, cancel action, queue count, balanced-profile display/settings, docs, automated state tests, and two-machine checklist.
+In scope: non-focus-stealing current-transfer progress toast, cancel action, balanced-profile display/settings, docs, automated state tests, and two-machine checklist. User-facing queue support and queue counts are deferred to GitHub issue #1.
 
 Out of scope: pause/resume UI unless engine support is already complete, transfer history database, notifications service, and arbitrary app paste support.
 
 ## Steps
 
-1. Add a compact bottom-right toast driven only by transfer-engine events: preparing, compressing when applicable, transferring, verifying, completed, failed, cancelled, and queued count. It must not follow the cursor or steal focus.
+1. Add a compact bottom-right toast driven only by transfer-engine events: preparing, compressing when applicable, transferring, verifying, completed, failed, and cancelled. It must not follow the cursor or steal focus. Do not display a queue count.
 2. Show bytes, percent, throughput, and ETA when measurable. Explain that known compressed formats are sent raw; do not expose internal archive files because decompression is automatic.
-3. Add cancellation and balanced network mode. Cancellation removes only the selected job and cleans its partial files.
+3. Add cancellation and balanced network mode. Cancellation stops the current job and cleans its partial files. Do not advertise user-facing queued jobs.
 4. Document security boundaries, Explorer/Desktop scope, source-file availability requirement, automatic decompression, staging location, limits, and failure recovery.
 5. Run two-computer tests in both directions: small/large compressible and precompressed files, multi-file and directories, multiple queued pastes, text/screenshots during transfers, cancellation, disconnect, low disk, filename attacks, and control latency under load.
 
