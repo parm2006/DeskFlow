@@ -1,6 +1,7 @@
 import threading
 
 from .handshake import ManifestHandshakeQueue
+from .executor import FifoTransferExecutor
 
 
 class FilePasteService:
@@ -11,14 +12,14 @@ class FilePasteService:
         publisher,
         sender,
         snapshot_selection,
-        run_async=None,
+        executor=None,
     ):
         self.control = control
         self.receiver = receiver
         self.publisher = publisher
         self.sender = sender
         self.snapshot_selection = snapshot_selection
-        self.run_async = run_async or self._run_thread
+        self.executor = executor or FifoTransferExecutor(sender)
         self.handshakes = ManifestHandshakeQueue(self.control.send_message)
         self._outgoing = {}
 
@@ -63,13 +64,5 @@ class FilePasteService:
         if outgoing is None:
             return False
         manifest, sources = outgoing
-        self.run_async(
-            lambda: self.sender.send_job(
-                manifest, sources, announce_manifest=False
-            )
-        )
+        self.executor.submit(manifest, sources)
         return True
-
-    @staticmethod
-    def _run_thread(operation):
-        threading.Thread(target=operation, daemon=True).start()
