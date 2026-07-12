@@ -24,8 +24,11 @@ def encode_clipboard_snapshot(snapshot):
     return payload
 
 class ClipboardHandler:
-    def __init__(self, on_clipboard_change):
+    def __init__(self, on_clipboard_change, on_file_availability=None):
         self.on_clipboard_change = on_clipboard_change
+        self.on_file_availability = on_file_availability
+        self.file_availability = None
+        self._file_drop_format = win32clipboard.CF_HDROP
         self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
@@ -46,6 +49,7 @@ class ClipboardHandler:
             self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
         except:
             pass
+        self._update_file_availability()
         self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
         logger.info("Rich Clipboard polling started (Native Zlib Compression)")
@@ -221,6 +225,29 @@ class ClipboardHandler:
                 
         return snapshot
 
+    def _update_file_availability(self):
+        try:
+            available = bool(
+                win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP)
+            )
+        except Exception:
+            available = False
+        if available == self.file_availability:
+            return
+        self.file_availability = available
+        if self.on_file_availability:
+            self.on_file_availability(available)
+
+    def read_file_selection(self):
+        win32clipboard.OpenClipboard()
+        try:
+            if not win32clipboard.IsClipboardFormatAvailable(self._file_drop_format):
+                return ()
+            paths = win32clipboard.GetClipboardData(self._file_drop_format)
+            return tuple(paths)
+        finally:
+            win32clipboard.CloseClipboard()
+
     def _poll_clipboard(self):
         while self.is_running:
             try:
@@ -230,6 +257,7 @@ class ClipboardHandler:
                 seq = win32clipboard.GetClipboardSequenceNumber()
                 if seq != self.last_sequence_num:
                     self.last_sequence_num = seq
+                    self._update_file_availability()
                     
                     snapshot = self._read_clipboard()
                     if snapshot:
