@@ -33,7 +33,7 @@ class TransferSenderTests(unittest.TestCase):
 
             TransferSender(LoopbackLane(receiver)).send_job(manifest, {"report.txt": source})
 
-            completed = Path(receive_directory) / "completed" / "report.txt"
+            completed = Path(receive_directory) / "completed" / manifest.job_id / "report.txt"
             self.assertEqual(completed.read_bytes(), source_path.read_bytes())
 
 

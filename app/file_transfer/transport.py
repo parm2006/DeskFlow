@@ -3,6 +3,7 @@ import secrets
 import socket
 import ssl
 import threading
+import logging
 
 from .protocol import (
     MAX_METADATA_SIZE,
@@ -16,6 +17,7 @@ from .protocol import (
 
 
 _HEADER = struct.Struct(">II")
+logger = logging.getLogger(__name__)
 
 
 def _receive_exact(sock, size):
@@ -78,7 +80,13 @@ class _FileLane:
             while self.sock is not None:
                 metadata, payload = read_frame(self.sock)
                 for callback in self._callbacks.get(metadata.get("type"), ()):
-                    callback(metadata, payload)
+                    try:
+                        callback(metadata, payload)
+                    except Exception:
+                        logger.exception(
+                            "File-lane callback failed for event %s; connection remains available",
+                            metadata.get("type"),
+                        )
         except (ConnectionError, OSError, FrameError):
             pass
         finally:

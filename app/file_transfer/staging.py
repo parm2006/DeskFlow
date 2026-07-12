@@ -20,6 +20,7 @@ class StagedFile:
             raise ValidationError("expected SHA-256 must contain 64 hexadecimal characters")
 
         self.root = Path(root).resolve()
+        self.job_id = job_id
         self.relative_path = validate_relative_path(relative_path)
         self.expected_size = expected_size
         self.expected_sha256 = expected_sha256.lower()
@@ -64,7 +65,7 @@ class StagedFile:
         self._file.flush()
         os.fsync(self._file.fileno())
         self._file.close()
-        destination = self.root / "completed" / Path(*self.relative_path.split("/"))
+        destination = self.root / "completed" / self.job_id / Path(*self.relative_path.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         os.link(self.partial_path, destination)
         self.partial_path.unlink()

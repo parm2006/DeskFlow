@@ -1,4 +1,4 @@
-def client_entry_position(direction, width, height, ratio, margin=16):
+def client_entry_position(direction, width, height, ratio, margin=96):
     horizontal = max(margin, min(width - margin - 1, int(width * ratio)))
     vertical = max(margin, min(height - margin - 1, int(height * ratio)))
     if direction == "right":
