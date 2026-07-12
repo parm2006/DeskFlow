@@ -5,6 +5,7 @@ from app.input_geometry import (
     work_area_geometry,
     toast_rect_in_work_area,
     windows_toplevel_handle,
+    configure_windows_window_api,
 )
 
 
@@ -55,6 +56,26 @@ class InputGeometryTests(unittest.TestCase):
 
         self.assertEqual(windows_toplevel_handle(111, get_ancestor), 222)
         self.assertEqual(calls, [(111, 2)])
+
+    def test_native_window_api_uses_pointer_sized_handle_signatures(self):
+        class Function:
+            argtypes = None
+            restype = None
+
+        class Api:
+            GetAncestor = Function()
+            MonitorFromWindow = Function()
+            GetMonitorInfoW = Function()
+            GetWindowRect = Function()
+            GetDpiForWindow = Function()
+            SetWindowPos = Function()
+
+        configure_windows_window_api(Api)
+
+        self.assertIsNotNone(Api.GetAncestor.argtypes)
+        self.assertIsNotNone(Api.GetAncestor.restype)
+        self.assertIsNotNone(Api.SetWindowPos.argtypes)
+        self.assertIsNotNone(Api.SetWindowPos.restype)
 
 
 if __name__ == "__main__":

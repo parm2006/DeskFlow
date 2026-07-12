@@ -88,11 +88,17 @@ class TransferToast:
         self.window.geometry(f"{TOAST_WIDTH}x{TOAST_HEIGHT}")
         self.window.deiconify()
         self.window.update_idletasks()
-        target = place_windows_window_in_work_area(self.window.winfo_id())
-        logger.debug("Transfer toast positioned in physical work-area rectangle %s", target)
+        self._schedule_hide(view.hide_after_ms)
+        try:
+            target = place_windows_window_in_work_area(self.window.winfo_id())
+            logger.debug("Transfer toast positioned in physical work-area rectangle %s", target)
+        except OSError:
+            logger.exception("Could not position transfer toast in its monitor work area")
         self.window.lift()
-        if view.hide_after_ms is not None:
-            self._hide_after = self.root.after(view.hide_after_ms, self._hide)
+
+    def _schedule_hide(self, delay_ms):
+        if delay_ms is not None:
+            self._hide_after = self.root.after(delay_ms, self._hide)
 
     def raise_if_visible(self):
         if self.window.state() != "withdrawn":

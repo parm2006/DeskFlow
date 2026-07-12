@@ -18,6 +18,7 @@ class NetworkNode:
         self.authenticated = False
         self.callbacks = {} # event_type -> list of callback functions
         self.receive_thread = None
+        self._send_lock = threading.Lock()
 
     def register_callback(self, event_type, callback):
         if event_type not in self.callbacks:
@@ -46,7 +47,10 @@ class NetworkNode:
             payload = json.dumps(msg_dict).encode('utf-8')
             # 4-byte length prefix (big-endian)
             header = struct.pack('>I', len(payload))
-            self.sock.sendall(header + payload)
+            with self._send_lock:
+                if not self.connected or not self.sock:
+                    return False
+                self.sock.sendall(header + payload)
             return True
         except Exception as e:
             logger.error(f"Send error: {e}")

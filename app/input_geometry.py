@@ -33,6 +33,27 @@ def windows_toplevel_handle(child_hwnd, get_ancestor):
     return get_ancestor(child_hwnd, 2) or child_hwnd  # GA_ROOT
 
 
+def configure_windows_window_api(user32):
+    import ctypes
+    from ctypes import wintypes
+
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+    user32.GetDpiForWindow.restype = wintypes.UINT
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+
+
 def place_windows_window_in_work_area(child_hwnd, margin_dip=16):
     import ctypes
     from ctypes import wintypes
@@ -46,6 +67,7 @@ def place_windows_window_in_work_area(child_hwnd, margin_dip=16):
         ]
 
     user32 = ctypes.windll.user32
+    configure_windows_window_api(user32)
     hwnd = windows_toplevel_handle(child_hwnd, user32.GetAncestor)
     monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
     info = MonitorInfo(cbSize=ctypes.sizeof(MonitorInfo))
