@@ -4,6 +4,7 @@ import json
 import os
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
+from app.file_transfer.toast import TransferToast
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class DeskFlowGUI(ctk.CTk):
         self.overlay_center_y = self.winfo_screenheight() // 2
         self.overlay = None
         self.overlay_active = False
+        self.transfer_toast = TransferToast(self, self._cancel_transfer)
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
@@ -167,7 +169,8 @@ class DeskFlowGUI(ctk.CTk):
             port=port, 
             layout_position=self.layout_position,
             on_capture_start=self.show_overlay, 
-            on_capture_stop=self.hide_overlay
+            on_capture_stop=self.hide_overlay,
+            on_transfer_status=self._on_transfer_status,
         )
         self.server.control_network.register_callback('connected', self._on_server_client_connected)
         self.server.control_network.register_callback('disconnected', self._on_server_client_disconnected)
@@ -194,7 +197,7 @@ class DeskFlowGUI(ctk.CTk):
         if self.client:
             self.client.disconnect()
             
-        self.client = DeskFlowClient(password=password)
+        self.client = DeskFlowClient(password=password, on_transfer_status=self._on_transfer_status)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
@@ -245,6 +248,16 @@ class DeskFlowGUI(ctk.CTk):
 
     def _on_client_disconnected_event(self, data):
         self.after(0, self.disconnect_client)
+
+    def _on_transfer_status(self, status):
+        self.after(0, lambda: self.transfer_toast.show(status))
+
+    def _cancel_transfer(self, job_id):
+        if self.server and self.server.transfer_controller.status(job_id):
+            return self.server.cancel_transfer(job_id)
+        if self.client and self.client.transfer_controller.status(job_id):
+            return self.client.cancel_transfer(job_id)
+        return False
 
     def on_close(self):
         if self.overlay:

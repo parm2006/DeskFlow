@@ -5,6 +5,7 @@ from .compression import decode_chunk
 from .models import ItemType, Manifest
 from .staging import StagedFile
 from .validation import validate_manifest, validate_relative_path
+from .status import TransferPhase
 
 
 class TransferAbortedError(OSError):
@@ -12,11 +13,14 @@ class TransferAbortedError(OSError):
 
 
 class TransferReceiver:
-    def __init__(self, staging_root):
+    def __init__(self, staging_root, controller=None):
         self.staging_root = Path(staging_root)
+        self.controller = controller
+        self.lane = None
         self._jobs = {}
 
     def attach(self, lane):
+        self.lane = lane
         lane.register_callback(
             "manifest", lambda metadata, payload: self.accept_manifest(metadata["manifest"])
         )
@@ -32,6 +36,12 @@ class TransferReceiver:
                 metadata["job_id"], metadata["relative_path"]
             ),
         )
+        lane.register_callback(
+            "job_complete", lambda metadata, payload: self.complete_job(metadata["job_id"])
+        )
+        lane.register_callback(
+            "job_cancelled", lambda metadata, payload: self.cancel_job(metadata["job_id"])
+        )
 
     def accept_manifest(self, wire_manifest):
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
@@ -44,7 +54,9 @@ class TransferReceiver:
             "condition": threading.Condition(),
             "completed": {},
             "error": None,
+            "bytes_received": 0,
         }
+        self._update(manifest.job_id, TransferPhase.PREPARING)
         return manifest
 
     def accept_chunk(self, metadata, payload):
@@ -71,6 +83,8 @@ class TransferReceiver:
                 )
                 job["staged"][relative_path] = staged
             staged.write(metadata["offset"], decoded)
+            job["bytes_received"] += len(decoded)
+            self._update(job_id, TransferPhase.TRANSFERRING)
             job["condition"].notify_all()
 
     def complete_file(self, job_id, relative_path):
@@ -81,6 +95,18 @@ class TransferReceiver:
             job["completed"][normalized] = completed
             job["condition"].notify_all()
             return completed
+
+    def complete_job(self, job_id):
+        job = self._jobs[job_id]
+        expected_files = {
+            path for path, item in job["items"].items() if item.item_type is ItemType.FILE
+        }
+        if set(job["completed"]) != expected_files:
+            raise ValueError("job completed before every file was verified")
+        self._update(job_id, TransferPhase.VERIFYING)
+        self._update(job_id, TransferPhase.COMPLETED)
+        if self.lane is not None:
+            self.lane.send({"type": "job_verified", "job_id": job_id})
 
     def read_range(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
@@ -103,13 +129,30 @@ class TransferReceiver:
                 job["condition"].wait()
 
     def cancel_job(self, job_id):
-        job = self._jobs[job_id]
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
         with job["condition"]:
             for staged in job["staged"].values():
                 staged.abort()
             job["staged"].clear()
             job["error"] = "transfer was cancelled"
+            self._update(job_id, TransferPhase.CANCELLED)
             job["condition"].notify_all()
+        return True
+
+    def _update(self, job_id, phase):
+        if self.controller is None:
+            return
+        job = self._jobs[job_id]
+        manifest = job["manifest"]
+        self.controller.update(
+            job_id,
+            phase,
+            _manifest_label(manifest),
+            job["bytes_received"],
+            manifest.total_size,
+        )
 
     def cancel_all(self, reason):
         for job_id in tuple(self._jobs):
@@ -120,3 +163,13 @@ class TransferReceiver:
                 job["staged"].clear()
                 job["error"] = reason
                 job["condition"].notify_all()
+
+
+def _manifest_label(manifest):
+    files = [item for item in manifest.items if item.item_type is ItemType.FILE]
+    directories = [item for item in manifest.items if item.item_type is ItemType.DIRECTORY]
+    if len(files) == 1 and not directories:
+        return files[0].relative_path.rsplit("/", 1)[-1]
+    if directories:
+        return f"{len(directories)} folder{'s' if len(directories) != 1 else ''} + {len(files)} files"
+    return f"{len(files)} files"
