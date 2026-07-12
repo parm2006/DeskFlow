@@ -37,6 +37,14 @@ class RecordingSender:
         self.jobs.append((manifest.job_id, tuple(sources), announce_manifest))
 
 
+class ImmediateExecutor:
+    def __init__(self, sender):
+        self.sender = sender
+
+    def submit(self, manifest, sources):
+        self.sender.send_job(manifest, sources, announce_manifest=False)
+
+
 class Manifest:
     def __init__(self, job_id):
         self.job_id = job_id
@@ -57,7 +65,7 @@ class FilePasteServiceTests(unittest.TestCase):
             publisher=publisher,
             sender=sender,
             snapshot_selection=lambda: snapshots.pop(0),
-            run_async=lambda operation: operation(),
+            executor=ImmediateExecutor(sender),
         )
         return service, control, receiver, publisher, sender
 
