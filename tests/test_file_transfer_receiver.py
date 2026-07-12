@@ -99,6 +99,30 @@ class TransferReceiverTests(unittest.TestCase):
             self.assertFalse(reader.is_alive())
             self.assertIsInstance(errors[0], TransferAbortedError)
 
+    def test_same_relative_path_completes_independently_in_two_jobs(self):
+        content = b"same file"
+        item = FileItem("same.txt", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            completed = []
+            for _ in range(2):
+                manifest = Manifest.create([item])
+                receiver.accept_manifest(manifest.to_wire())
+                receiver.accept_chunk(
+                    {
+                        "job_id": manifest.job_id,
+                        "relative_path": "same.txt",
+                        "offset": 0,
+                        "compressed": False,
+                        "original_size": len(content),
+                    },
+                    content,
+                )
+                completed.append(receiver.complete_file(manifest.job_id, "same.txt"))
+
+            self.assertNotEqual(completed[0], completed[1])
+            self.assertEqual([path.read_bytes() for path in completed], [content, content])
+
 
 if __name__ == "__main__":
     unittest.main()

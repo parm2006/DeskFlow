@@ -21,7 +21,7 @@ class StagedFileTests(unittest.TestCase):
             self.assertEqual(completed.read_bytes(), content)
             self.assertFalse(staged.partial_path.exists())
 
-            duplicate = StagedFile(root, "job-2", "folder/report.txt", len(content), digest)
+            duplicate = StagedFile(root, "job-1", "folder/report.txt", len(content), digest)
             duplicate.write(0, content)
             with self.assertRaises(FileExistsError):
                 duplicate.finalize()
@@ -45,7 +45,7 @@ class StagedFileTests(unittest.TestCase):
             with self.assertRaises(IntegrityError):
                 staged.finalize()
 
-            self.assertFalse((root / "completed" / "safe.bin").exists())
+            self.assertFalse((root / "completed" / "job" / "safe.bin").exists())
             self.assertFalse(staged.partial_path.exists())
 
 

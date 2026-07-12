@@ -129,7 +129,7 @@ class TransportTests(unittest.TestCase):
             try:
                 client.connect("127.0.0.1", server.port, fingerprint, token)
                 TransferSender(client).send_job(manifest, {"received.txt": source})
-                completed = Path(receive_directory) / "completed" / "received.txt"
+                completed = Path(receive_directory) / "completed" / manifest.job_id / "received.txt"
                 for _ in range(100):
                     if completed.exists():
                         break
@@ -138,6 +138,33 @@ class TransportTests(unittest.TestCase):
             finally:
                 client.close()
                 server.stop()
+
+    def test_file_lane_accepts_fresh_session_after_client_disconnect(self):
+        ensure_certificates()
+        server = FileLaneServer(CERT_FILE, KEY_FILE, host="127.0.0.1", port=0)
+        self.assertTrue(server.start())
+        with open(CERT_FILE, encoding="ascii") as certificate_file:
+            fingerprint = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(certificate_file.read())
+            ).hexdigest()
+        first = FileLaneClient()
+        second = FileLaneClient()
+        try:
+            first.connect("127.0.0.1", server.port, fingerprint, server.issue_session())
+            first.close()
+            for _ in range(100):
+                if server.sock is None:
+                    break
+                threading.Event().wait(0.01)
+
+            second.connect("127.0.0.1", server.port, fingerprint, server.issue_session())
+
+            self.assertIsNotNone(second.sock)
+            self.assertIsNotNone(server.sock)
+        finally:
+            first.close()
+            second.close()
+            server.stop()
 
 
 if __name__ == "__main__":
