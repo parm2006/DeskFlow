@@ -8,7 +8,7 @@ Execute in this order. Read each plan fully, honor STOP conditions, and update i
 
 | Plan | Title | Effort | Depends on | Status |
 |---|---|---:|---|---|
-| [001](001-fix-toast-monitor-placement.md) | Keep every toast inside its owning monitor | S | - | TODO |
+| [001](001-fix-toast-monitor-placement.md) | Keep every toast inside its owning monitor | S | - | IN PROGRESS - automated gates pass; two-computer DPI check pending |
 | [002](002-report-explorer-consumed-progress.md) | Mirror measured Explorer-consumed progress | L | 001 | TODO |
 | [003](003-add-async-shell-lifecycle.md) | Use Explorer's async lifecycle as the authoritative result | L | 002 | TODO |
 
