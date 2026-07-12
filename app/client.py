@@ -14,6 +14,7 @@ from app.file_transfer.sender import TransferSender
 from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
 from app.latest_wins_sender import LatestWinsSender
+from app.input_geometry import client_entry_position
 
 logger = logging.getLogger(__name__)
 
@@ -176,14 +177,9 @@ class DeskFlowClient:
         w = self.input_handler.screen_width
         h = self.input_handler.screen_height
         
-        if direction == 'right':
-            self.input_handler.inject_position(2, int(h * ratio))
-        elif direction == 'left':
-            self.input_handler.inject_position(w - 2, int(h * ratio))
-        elif direction == 'top':
-            self.input_handler.inject_position(int(w * ratio), h - 2)
-        elif direction == 'bottom':
-            self.input_handler.inject_position(int(w * ratio), 2)
+        self.input_handler.inject_position(
+            *client_entry_position(direction, w, h, ratio)
+        )
 
     def on_mouse_move(self, data):
         dx = data.get('dx', 0) * self.speed_scale_x

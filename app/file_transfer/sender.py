@@ -7,9 +7,10 @@ class TransferSender:
     def __init__(self, lane):
         self.lane = lane
 
-    def send_job(self, manifest, sources):
+    def send_job(self, manifest, sources, announce_manifest=True):
         validate_manifest(manifest)
-        self.lane.send({"type": "manifest", "manifest": manifest.to_wire()})
+        if announce_manifest:
+            self.lane.send({"type": "manifest", "manifest": manifest.to_wire()})
         for item in manifest.items:
             if item.item_type is ItemType.DIRECTORY:
                 continue

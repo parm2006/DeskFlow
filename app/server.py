@@ -230,6 +230,11 @@ class DeskFlowServer:
         
         if has_ctrl and has_alt and has_shift and has_esc:
             logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
+            for key in sorted(self.pressed_keys - {'esc', 'escape'}):
+                self.control_network.send_message({
+                    'type': 'key_release',
+                    'key': {'type': 'special', 'value': key},
+                })
             self.pressed_keys.clear()
             self.control_network.disconnect()
             self.data_network.disconnect()
