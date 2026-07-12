@@ -10,7 +10,7 @@ Execute in order. Read each plan fully, honor STOP conditions, and update its ro
 |---|---|---:|---|---|
 | [001](001-validate-windows-virtual-file-paste.md) | Validate native virtual-file paste | M | — | DONE |
 | [002](002-build-secure-transfer-engine.md) | Build secure queued transfer engine | L | 001 | DONE |
-| [003](003-integrate-manifest-on-paste.md) | Integrate manifest-on-paste workflow | L | 001, 002 | IN PROGRESS |
+| [003](003-integrate-manifest-on-paste.md) | Integrate manifest-on-paste workflow | L | 001, 002 | DONE |
 | [004](004-add-progress-and-system-verification.md) | Add progress UI and system verification | M | 003 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | SUPERSEDED
@@ -36,6 +36,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | SUPERSEDED
 - **2026-07-11**: Initial Phase 4 plans created from the approved manifest-on-paste, FIFO job, virtual-file, security, adaptive-compression, and balanced-network design.
 - **2026-07-11**: Plan 001 verified with 18/18 automated tests plus successful Explorer/Desktop paste and clipboard-replacement checks. Plan 002 began only as an unverified prototype and still requires its planned test-first security review.
 - **2026-07-11**: Replaced the Plan 002 prototype with a test-first engine. Verified FIFO jobs, bounded authenticated TLS framing, session-bound certificate identity, strict paths, source mutation detection, adaptive compression, latency throttling, partial-file cleanup, and end-to-end SHA-256 publication with 37 focused and 55 total tests.
+- **2026-07-12**: Plan 003 verified in both directions with small/large files, multi-file selections, folders, Desktop/Explorer destinations, screenshots/text during transfer, reconnect, and cut-as-copy. Strict FIFO sending is automated. Multi-destination pastes during one active Explorer operation are deferred in [GitHub issue #1](https://github.com/parm2006/DeskFlow/issues/1) because Explorer requires `IDataObjectAsyncCapability` to keep its folder UI interactive during lengthy virtual-file extraction.
 
 ## Considered and rejected
 
@@ -47,3 +48,4 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | SUPERSEDED
 ## Deferred
 
 - Cross-platform file paste, Internet relay, cut/delete semantics, arbitrary application upload fields, and automatic execution.
+- Multiple destination folders while a prior Explorer virtual-file paste is still active; see [GitHub issue #1](https://github.com/parm2006/DeskFlow/issues/1).

@@ -51,12 +51,18 @@ Cover Ctrl state variants, one-second timeout, manifest immutability, copy immed
 
 ## Done criteria
 
-- [ ] No file bytes transfer before remote Ctrl+V.
-- [ ] Manifest handshake completes or fails within one second.
-- [ ] Clipboard and input are free immediately after job acceptance.
-- [ ] Multiple initiated file pastes are preserved in FIFO order.
-- [ ] Explorer and Desktop paste complete while later clipboard operations work.
-- [ ] Existing 9 clipboard tests and all new tests pass.
+- [x] No file bytes transfer before remote Ctrl+V.
+- [x] Manifest handshake completes or fails within one second.
+- [x] Clipboard and input are free immediately after job acceptance.
+- [x] Multiple initiated file transfers are preserved in FIFO order by a single-writer executor.
+- [x] Explorer and Desktop paste complete while later text/screenshot clipboard operations work.
+- [x] Existing clipboard tests and all new tests pass.
+
+## Verification record
+
+- **2026-07-12 automated**: 83 repository tests passed; FIFO execution test proves B and C remain pending while A is active, then run A → B → C without overlap.
+- **2026-07-12 manual**: server→client and client→server passed with small and 100 MB files, mixed multi-file selections, folders, Desktop and Explorer destinations, screenshots/text during transfer, disconnect/reconnect, repeated filenames, and cut treated as copy.
+- **Accepted limitation**: the active Explorer window remains synchronously busy while its virtual stream is being consumed. Selecting multiple files/folders in one paste works, but navigating that same Explorer window to initiate additional destination-specific pastes before completion is deferred to [GitHub issue #1](https://github.com/parm2006/DeskFlow/issues/1). The proposed fix is a native data object implementing `IDataObjectAsyncCapability`.
 
 ## STOP conditions
 
