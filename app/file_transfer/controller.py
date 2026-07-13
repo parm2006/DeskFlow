@@ -41,6 +41,11 @@ class TransferController:
             previous = self._statuses.get(job_id)
             if previous is not None and previous.is_terminal:
                 return previous
+            if (
+                job_id in self._cancelled
+                and phase not in {TransferPhase.CANCELLING, TransferPhase.CANCELLED}
+            ):
+                return previous
             self._statuses[job_id] = status
             subscribers = tuple(self._subscribers)
         for callback in subscribers:
@@ -50,9 +55,28 @@ class TransferController:
     def cancel(self, job_id):
         with self._lock:
             previous = self._statuses.get(job_id)
-            if previous is None or previous.is_terminal:
+            if previous is None or previous.is_terminal or job_id in self._cancelled:
                 return False
             self._cancelled.add(job_id)
+        self.update(
+            job_id,
+            TransferPhase.CANCELLING,
+            previous.label,
+            previous.bytes_done,
+            previous.bytes_total,
+            previous.bytes_per_second,
+        )
+        return True
+
+    def confirm_cancelled(self, job_id):
+        with self._lock:
+            previous = self._statuses.get(job_id)
+            if (
+                previous is None
+                or previous.is_terminal
+                or job_id not in self._cancelled
+            ):
+                return False
         self.update(
             job_id,
             TransferPhase.CANCELLED,

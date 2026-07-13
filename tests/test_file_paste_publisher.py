@@ -1,6 +1,6 @@
 import unittest
 
-from app.file_transfer.publisher import build_virtual_file_set
+from app.file_transfer.publisher import build_virtual_file_set, inject_paste_shortcut
 
 
 class RecordingReceiver:
@@ -15,8 +15,34 @@ class RecordingReceiver:
     def record_stream_read(self, job_id, path, offset, count):
         self.consumed.append((job_id, path, offset, count))
 
+    def record_stream_open(self, job_id, path):
+        return None
+
+    def record_stream_close(self, job_id, path):
+        return None
+
 
 class VirtualPastePublisherTests(unittest.TestCase):
+    def test_paste_injection_releases_ctrl_when_key_press_fails(self):
+        class Keyboard:
+            def __init__(self):
+                self.events = []
+
+            def press(self, key):
+                self.events.append(("press", key))
+                if key == "v":
+                    raise RuntimeError("injection failed")
+
+            def release(self, key):
+                self.events.append(("release", key))
+
+        keyboard = Keyboard()
+
+        with self.assertRaises(RuntimeError):
+            inject_paste_shortcut(keyboard, ctrl_key="ctrl")
+
+        self.assertEqual(keyboard.events[-1], ("release", "ctrl"))
+
     def test_manifest_becomes_directory_and_growing_file_streams(self):
         receiver = RecordingReceiver()
         manifest = {

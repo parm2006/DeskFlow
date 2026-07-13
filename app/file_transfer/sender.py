@@ -92,7 +92,11 @@ class TransferSender:
             bytes_done = metadata.get("bytes_done")
             bytes_total = metadata.get("bytes_total")
             speed = metadata.get("bytes_per_second", 0.0)
-            if phase not in {TransferPhase.PASTING, TransferPhase.COMPLETED}:
+            if phase not in {
+                TransferPhase.PASTING,
+                TransferPhase.COMPLETED,
+                TransferPhase.CANCELLED,
+            }:
                 return False
             if not isinstance(bytes_done, int) or not 0 <= bytes_done <= expected_total:
                 return False
@@ -105,7 +109,7 @@ class TransferSender:
             return False
         if self.controller:
             self.controller.update(job_id, phase, label, bytes_done, bytes_total, speed)
-        if phase is TransferPhase.COMPLETED:
+        if phase in {TransferPhase.COMPLETED, TransferPhase.CANCELLED}:
             with self._paste_lock:
                 self._paste_jobs.pop(job_id, None)
         return True

@@ -13,6 +13,17 @@ from app.windows_virtual_files import (
 )
 
 
+def inject_paste_shortcut(keyboard, ctrl_key=Key.ctrl, paste_key="v"):
+    try:
+        keyboard.press(ctrl_key)
+        keyboard.press(paste_key)
+    finally:
+        try:
+            keyboard.release(paste_key)
+        finally:
+            keyboard.release(ctrl_key)
+
+
 def build_virtual_file_set(manifest, receiver):
     job_id = manifest["job_id"]
     files = []
@@ -33,6 +44,8 @@ def build_virtual_file_set(manifest, receiver):
                 on_read=lambda offset, count, path=path: receiver.record_stream_read(
                     job_id, path, offset, count
                 ),
+                on_open=lambda path=path: receiver.record_stream_open(job_id, path),
+                on_close=lambda path=path: receiver.record_stream_close(job_id, path),
             )
 
         files.append(VirtualFile(relative_path, size, None, open_stream=open_stream))
@@ -66,11 +79,15 @@ class VirtualPastePublisher:
                     pythoncom.PumpWaitingMessages()
                     continue
                 file_set = build_virtual_file_set(manifest, receiver)
-                self._owners.append(publish_virtual_files(file_set))
-                keyboard.press(Key.ctrl)
-                keyboard.press("v")
-                keyboard.release("v")
-                keyboard.release(Key.ctrl)
+                self._owners.append(
+                    publish_virtual_files(
+                        file_set,
+                        on_performed_drop=lambda job_id=manifest["job_id"]: (
+                            receiver.record_performed_drop(job_id)
+                        ),
+                    )
+                )
+                inject_paste_shortcut(keyboard)
                 deadline = time.monotonic() + 0.15
                 while time.monotonic() < deadline:
                     pythoncom.PumpWaitingMessages()

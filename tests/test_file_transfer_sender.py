@@ -102,6 +102,21 @@ class TransferSenderTests(unittest.TestCase):
         }, b""))
         self.assertEqual(controller.status("job").bytes_done, 50)
 
+    def test_remote_cancelled_paste_closes_source_status(self):
+        controller = TransferController()
+        lane = type("Lane", (), {"callbacks": {}, "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb)})()
+        sender = TransferSender(lane, controller=controller)
+        sender._paste_jobs["job"] = ("file.bin", 100)
+        controller.update("job", TransferPhase.PASTING, "file.bin", 40, 100)
+
+        handled = sender._on_paste_progress({
+            "job_id": "job", "phase": "cancelled", "bytes_done": 40,
+            "bytes_total": 100, "bytes_per_second": 0,
+        }, b"")
+
+        self.assertTrue(handled)
+        self.assertEqual(controller.status("job").phase, TransferPhase.CANCELLED)
+
     def test_late_network_verification_cannot_reset_active_explorer_progress(self):
         controller = TransferController()
         lane = type("Lane", (), {"callbacks": {}, "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb)})()
@@ -113,7 +128,6 @@ class TransferSenderTests(unittest.TestCase):
 
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.PASTING)
         self.assertEqual(controller.status(manifest.job_id).bytes_done, 40)
-
 
 if __name__ == "__main__":
     unittest.main()

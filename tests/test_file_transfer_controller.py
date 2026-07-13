@@ -25,6 +25,8 @@ class TransferControllerTests(unittest.TestCase):
         with self.assertRaises(TransferCancelled):
             controller.check_cancelled("job-A")
         controller.check_cancelled("job-B")
+        self.assertEqual(controller.status("job-A").phase, TransferPhase.CANCELLING)
+        self.assertTrue(controller.confirm_cancelled("job-A"))
         self.assertEqual(controller.status("job-A").phase, TransferPhase.CANCELLED)
 
     def test_cancelled_terminal_state_cannot_be_overwritten_by_late_failure(self):
@@ -33,6 +35,9 @@ class TransferControllerTests(unittest.TestCase):
         controller.cancel("job")
 
         controller.update("job", TransferPhase.FAILED, "file.bin", 10, 100, error_code="OSError")
+
+        self.assertEqual(controller.status("job").phase, TransferPhase.CANCELLING)
+        controller.confirm_cancelled("job")
 
         self.assertEqual(controller.status("job").phase, TransferPhase.CANCELLED)
 

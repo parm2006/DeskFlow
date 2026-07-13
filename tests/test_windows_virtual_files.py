@@ -1,8 +1,13 @@
 import struct
 import unittest
+
+import pythoncom
+import win32clipboard
+from win32com.server.exception import COMException
 import tempfile
 import gc
 from pathlib import Path
+from unittest.mock import patch
 
 import pythoncom
 from win32com.server import util
@@ -78,6 +83,24 @@ class VirtualFileSetTests(unittest.TestCase):
 
 
 class VirtualFileDataObjectTests(unittest.TestCase):
+    def test_performed_drop_notification_is_accepted_and_reported(self):
+        observed = []
+        data_object = VirtualFileDataObject(
+            VirtualFileSet([VirtualFile("a.txt", 1, lambda: b"a")]),
+            on_performed_drop=lambda: observed.append("done"),
+        )
+        performed_drop = win32clipboard.RegisterClipboardFormat("Performed DropEffect")
+        medium = pythoncom.STGMEDIUM()
+        medium.set(pythoncom.TYMED_HGLOBAL, struct.pack("<I", 0))
+
+        data_object.SetData(
+            (performed_drop, None, pythoncom.DVASPECT_CONTENT, -1, pythoncom.TYMED_HGLOBAL),
+            medium,
+            False,
+        )
+
+        self.assertEqual(observed, ["done"])
+
     def setUp(self):
         pythoncom.OleInitialize()
         self.addCleanup(pythoncom.CoUninitialize)
@@ -177,6 +200,34 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         self.assertEqual(stream.Read(3), b"cde")
         self.assertEqual(consumed, [(0, 4), (2, 3)])
 
+    def test_callback_stream_maps_intentional_cancel_to_windows_cancel_hresult(self):
+        class CancelledRead(OSError):
+            winerror = 1223
+
+        stream = CallbackStream(
+            lambda offset, count: (_ for _ in ()).throw(CancelledRead("cancelled")),
+            10,
+        )
+
+        with self.assertRaises(COMException) as raised:
+            stream.Read(4)
+
+        self.assertEqual(raised.exception.hresult, -2147023673)
+
+    def test_callback_stream_reports_open_and_close_exactly_once(self):
+        events = []
+        stream = CallbackStream(
+            lambda offset, count: b"data"[offset:offset + count],
+            4,
+            on_open=lambda: events.append("open"),
+            on_close=lambda: events.append("close"),
+        )
+
+        stream.close()
+        stream.close()
+
+        self.assertEqual(events, ["open", "close"])
+
     def test_callback_stream_clone_preserves_progress_callback(self):
         content = b"abcdefghij"
         consumed = []
@@ -190,6 +241,22 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         clone = stream.Clone()
         self.assertEqual(clone.Read(3), b"efg")
         self.assertEqual(consumed, [(4, 3)])
+
+    def test_callback_stream_clone_preserves_lifetime_callbacks(self):
+        on_open = lambda: None
+        on_close = lambda: None
+        stream = CallbackStream(
+            lambda offset, count: b"data"[offset:offset + count],
+            4,
+            on_open=on_open,
+            on_close=on_close,
+        )
+
+        with patch("app.windows_virtual_files.open_callback_stream") as opener:
+            stream.Clone()
+
+        self.assertIs(opener.call_args.kwargs["on_open"], on_open)
+        self.assertIs(opener.call_args.kwargs["on_close"], on_close)
 
 
 if __name__ == "__main__":

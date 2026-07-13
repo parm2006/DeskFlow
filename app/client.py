@@ -30,6 +30,7 @@ class DeskFlowClient:
         self.file_receiver = TransferReceiver(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'DeskFlow' / 'transfers' / 'client', controller=self.transfer_controller)
         self.file_receiver.attach(self.file_network)
         self.file_network.register_callback('cancel_request', self._on_cancel_request)
+        self.file_network.register_callback('cancel_ack', self._on_cancel_ack)
         self.file_publisher = VirtualPastePublisher()
         self.input_handler = InputHandler()
         self.is_active = False
@@ -87,6 +88,11 @@ class DeskFlowClient:
         job_id = metadata.get('job_id')
         self.transfer_controller.cancel(job_id)
         self.file_receiver.cancel_job(job_id)
+        self.transfer_controller.confirm_cancelled(job_id)
+        self.file_network.send({'type': 'cancel_ack', 'job_id': job_id})
+
+    def _on_cancel_ack(self, metadata, payload):
+        self.transfer_controller.confirm_cancelled(metadata.get('job_id'))
 
     def on_disconnected(self, data):
         logger.info("Disconnected from Server.")
