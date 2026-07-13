@@ -35,3 +35,10 @@ DeskFlow.exe --daemon --role client --host 192.168.1.20 --password "your-passwor
 The process stays active in the signed-in Windows user session and can be stopped with `Ctrl+C` when launched from a terminal. For repeat use, place the chosen command in a Windows shortcut or scheduled task configured to run at user logon. The daemon does not require the GUI window to remain open.
 
 The application icon is stored in [`assets/DeskFlow.ico`](assets/DeskFlow.ico) and is used for both the Tk window and packaged executable.
+
+### Global shortcuts
+
+- `Ctrl+Alt+Shift+B` toggles the DeskFlow window between visible and hidden on both connected computers.
+- `Ctrl+Alt+Shift+Esc` performs the emergency release, disconnects remote control, and exits DeskFlow.
+
+The shortcuts remain active while the GUI is hidden. The last selected Server or Client role is remembered and restored on the next launch.
