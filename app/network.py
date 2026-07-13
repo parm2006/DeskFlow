@@ -229,7 +229,9 @@ class NetworkClient(NetworkNode):
                 if expected is None and pin_path.exists():
                     expected = pin_path.read_text(encoding="ascii").strip()
                 if expected is not None and fingerprint != expected:
-                    raise ssl.SSLError("peer certificate fingerprint changed")
+                    raise ssl.SSLError(
+                        "peer certificate changed; remove the saved DeskFlow peer fingerprint and pair again"
+                    )
                 if expected is None:
                     if self.fingerprint_approval is not None and not self.fingerprint_approval(fingerprint, host):
                         raise ssl.SSLError("peer certificate fingerprint was not approved")

@@ -141,7 +141,14 @@ class DeskFlowGUI(ctk.CTk):
         self.client_connect_btn.pack(pady=10)
         self.client_disconnect_btn = ctk.CTkButton(self.tab_client, text="Disconnect", fg_color="red", hover_color="darkred", command=self.disconnect_client)
         
-        self.status_label = ctk.CTkLabel(self, text="Status: Idle", text_color="gray")
+        self.status_label = ctk.CTkLabel(
+            self,
+            text="Status: Idle",
+            text_color="gray",
+            width=270,
+            wraplength=270,
+            justify="center",
+        )
         self.status_label.grid(row=1, column=0, padx=20, pady=10)
         
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -332,7 +339,21 @@ class DeskFlowGUI(ctk.CTk):
             self.client_disconnect_btn.pack(pady=10)
             self.client.control_network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
-            self.status_label.configure(text=f"Status: Connection failed ({error_msg})", text_color="red")
+            message = f"Connection failed:\n{error_msg}"
+            self.status_label.configure(text=message, text_color="red")
+            self._show_copyable_error(message)
+
+    def _show_copyable_error(self, message):
+        window = ctk.CTkToplevel(self)
+        window.title("DeskFlow connection error")
+        window.geometry("420x180")
+        window.transient(self)
+        window.grab_set()
+        text = ctk.CTkTextbox(window, wrap="word", width=380, height=105)
+        text.pack(padx=20, pady=(20, 10), fill="both", expand=True)
+        text.insert("1.0", message)
+        text.focus_set()
+        ctk.CTkButton(window, text="Close", command=window.destroy, width=100).pack(pady=(0, 12))
 
     def stop_server(self):
         if self.server:
