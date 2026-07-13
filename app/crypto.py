@@ -42,7 +42,21 @@ def certificate_fingerprint(cert_file=CERT_FILE):
 def ensure_certificates():
     """Generates self-signed certificates if they don't exist."""
     if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
-        return True
+        try:
+            with open(CERT_FILE, "rb") as stream:
+                certificate = x509.load_pem_x509_certificate(stream.read())
+            private_key = serialization.load_pem_private_key(load_private_key_bytes(), password=None)
+            if private_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ) == certificate.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ):
+                return True
+            logger.warning("DeskFlow certificate and private key do not match; regenerating identity")
+        except Exception as error:
+            logger.warning("DeskFlow identity is unreadable; regenerating identity: %s", error)
 
     logger.info("Generating new self-signed certificate...")
     try:
