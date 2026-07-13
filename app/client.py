@@ -20,9 +20,11 @@ from app.input_geometry import client_entry_position
 logger = logging.getLogger(__name__)
 
 class DeskFlowClient:
-    def __init__(self, password, on_transfer_status=None):
-        self.control_network = NetworkClient(password)
-        self.data_network = NetworkClient(password)
+    def __init__(self, password, on_transfer_status=None, fingerprint_approval=None):
+        self._fingerprint_approval = fingerprint_approval
+        self._approved_fingerprint = None
+        self.control_network = NetworkClient(password, fingerprint_approval=self._approve_fingerprint)
+        self.data_network = NetworkClient(password, fingerprint_approval=self._approve_fingerprint)
         self.file_network = FileLaneClient()
         self.transfer_controller = TransferController()
         if on_transfer_status:
@@ -77,6 +79,17 @@ class DeskFlowClient:
         self.speed_scale_x = 1.0
         self.speed_scale_y = 1.0
 
+    def _approve_fingerprint(self, fingerprint, host):
+        """Approve a peer once and require both TLS lanes to use that identity."""
+        if self._approved_fingerprint == fingerprint:
+            return True
+        if self._fingerprint_approval is None:
+            return False
+        approved = bool(self._fingerprint_approval(fingerprint, host))
+        if approved:
+            self._approved_fingerprint = fingerprint
+        return approved
+
     def cancel_transfer(self, job_id):
         cancelled = self.transfer_controller.cancel(job_id)
         if cancelled:
@@ -111,6 +124,18 @@ class DeskFlowClient:
         self.control_connected = False
         self.data_connected = False
         self.connect_error = None
+        callback_reported = False
+        callback_lock = threading.Lock()
+
+        def _report(success, error):
+            nonlocal callback_reported
+            if callback is None:
+                return
+            with callback_lock:
+                if callback_reported:
+                    return
+                callback_reported = True
+            callback(success, error)
         
         def _check_both_connected():
             if self.connect_error:
@@ -118,7 +143,7 @@ class DeskFlowClient:
             if self.control_connected and self.data_connected:
                 self.clipboard.start()
                 self.hotkey_monitor.start()
-                if callback: callback(True, None)
+                _report(True, None)
 
         def _control_callback(success, err):
             if success:
@@ -127,7 +152,7 @@ class DeskFlowClient:
             else:
                 self.connect_error = err
                 self.disconnect()
-                if callback: callback(False, f"Control Socket Error: {err}")
+                _report(False, f"Control Socket Error: {err}")
 
         def _data_callback(success, err):
             if success:
@@ -136,11 +161,22 @@ class DeskFlowClient:
             else:
                 self.connect_error = err
                 self.disconnect()
-                if callback and not self.control_connected: # Avoid double callback if both fail
-                    callback(False, f"Data Socket Error: {err}")
+                _report(False, f"Data Socket Error: {err}")
 
-        self.control_network.connect(host, port, _control_callback)
-        self.data_network.connect(host, port + 1, _data_callback)
+        # Establish and approve the control lane first.  Pin its certificate
+        # for the data lane so the two sockets cannot be paired to different
+        # server identities during simultaneous TOFU.
+        def _connect_data_after_control():
+            fingerprint = self.control_network.peer_certificate_fingerprint()
+            self.data_network.expected_fingerprint = fingerprint
+            self.data_network.connect(host, port + 1, _data_callback)
+
+        def _control_then_data(success, err):
+            _control_callback(success, err)
+            if success and not self.connect_error:
+                _connect_data_after_control()
+
+        self.control_network.connect(host, port, _control_then_data)
 
     def disconnect(self):
         self.control_network.disconnect()

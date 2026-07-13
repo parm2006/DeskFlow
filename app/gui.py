@@ -2,6 +2,8 @@ import customtkinter as ctk
 import logging
 import json
 import os
+import threading
+from tkinter import messagebox
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
 from app.file_transfer.toast import TransferToast
@@ -25,6 +27,8 @@ class DeskFlowGUI(ctk.CTk):
         self.overlay_center_y = self.winfo_screenheight() // 2
         self.overlay = None
         self.overlay_active = False
+        self._fingerprint_decisions = {}
+        self._fingerprint_lock = threading.Lock()
         self.transfer_toast = TransferToast(self, self._cancel_transfer)
         
         # UI setup
@@ -197,7 +201,11 @@ class DeskFlowGUI(ctk.CTk):
         if self.client:
             self.client.disconnect()
             
-        self.client = DeskFlowClient(password=password, on_transfer_status=self._on_transfer_status)
+        self.client = DeskFlowClient(
+            password=password,
+            on_transfer_status=self._on_transfer_status,
+            fingerprint_approval=self._approve_peer_fingerprint,
+        )
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
@@ -210,6 +218,42 @@ class DeskFlowGUI(ctk.CTk):
             self.after(0, lambda: self._handle_connect_result(success, error_msg, ip, port))
             
         self.client.connect(ip, port, _on_connect_result)
+
+    def _approve_peer_fingerprint(self, fingerprint, host):
+        """Ask on the UI thread before trusting a new peer identity.
+
+        NetworkClient invokes this callback from a connection worker.  The
+        event bridges that worker to Tk's main loop and also coalesces the
+        control/data lane prompts into one decision.
+        """
+        key = (host, fingerprint)
+        with self._fingerprint_lock:
+            if key in self._fingerprint_decisions:
+                return self._fingerprint_decisions[key]
+            decision = {}
+            done = threading.Event()
+
+            def prompt():
+                try:
+                    short = fingerprint.upper()
+                    approved = messagebox.askyesno(
+                        "Approve DeskFlow peer?",
+                        f"A new DeskFlow peer was found at {host}.\n\n"
+                        f"Certificate fingerprint:\n{short}\n\n"
+                        "Approve this computer and remember its identity?",
+                        parent=self,
+                    )
+                    decision["value"] = bool(approved)
+                finally:
+                    done.set()
+
+            self.after(0, prompt)
+            # Release the lock while waiting so a reconnect can inspect state.
+        done.wait()
+        result = decision.get("value", False)
+        with self._fingerprint_lock:
+            self._fingerprint_decisions[key] = result
+        return result
 
     def _handle_connect_result(self, success, error_msg, ip, port):
         self.client_connect_btn.configure(state="normal")

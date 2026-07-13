@@ -19,7 +19,7 @@ def _screen_size():
         return (1920, 1080)
 
 
-def run_daemon(argv=None, server_factory=DeskFlowServer, client_factory=DeskFlowClient):
+def run_daemon(argv=None, server_factory=DeskFlowServer, client_factory=DeskFlowClient, stop_event=None):
     parser = argparse.ArgumentParser(prog="deskflow --daemon")
     parser.add_argument("--config", help="JSON file containing daemon options")
     parser.add_argument("--role", choices=("server", "client"))
@@ -27,21 +27,28 @@ def run_daemon(argv=None, server_factory=DeskFlowServer, client_factory=DeskFlow
     parser.add_argument("--port", type=int)
     parser.add_argument("--layout")
     parser.add_argument("--host")
-    parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--log-level")
     ns = parser.parse_args(argv)
     options = {}
     if ns.config:
         with open(ns.config, encoding="utf-8") as stream:
             options = json.load(stream)
+        if not isinstance(options, dict):
+            parser.error("--config must contain a JSON object")
     role = ns.role or options.get("role")
     password = ns.password or options.get("password")
     if role not in ("server", "client") or not password:
         parser.error("--role and --password are required (or provide them in --config)")
     logging.basicConfig(level=getattr(logging, str(ns.log_level or options.get("log_level", "INFO")).upper(), logging.INFO))
-    stop_event = threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: stop_event.set())
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+    stop_event = stop_event or threading.Event()
+    # signal.signal is only valid on the main thread; injected events make the
+    # lifecycle deterministic for embedders and tests.
+    try:
+        signal.signal(signal.SIGINT, lambda *_: stop_event.set())
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
+    except ValueError:
+        logger.debug("daemon signal handlers unavailable outside main thread")
     width, height = _screen_size()
     service = None
     if role == "server":
