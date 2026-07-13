@@ -203,7 +203,6 @@ class DeskFlowGUI(ctk.CTk):
                 break
 
     def start_server(self):
-        self.save_role("server")
         port = int(self.server_port_entry.get())
         password = self.server_password_entry.get()
         
@@ -233,6 +232,7 @@ class DeskFlowGUI(ctk.CTk):
         self.server.set_screen_size(screen_width, screen_height)
         
         if self.server.start():
+            self.save_role("server")
             try:
                 code = pairing_code(certificate_fingerprint())
                 self.server_pairing_code_label.configure(
@@ -248,7 +248,6 @@ class DeskFlowGUI(ctk.CTk):
             self.status_label.configure(text="Status: Failed to start server", text_color="red")
 
     def connect_client(self):
-        self.save_role("client")
         ip = self.client_ip_entry.get()
         port = int(self.client_port_entry.get())
         password = self.client_password_entry.get()
@@ -321,6 +320,7 @@ class DeskFlowGUI(ctk.CTk):
     def _handle_connect_result(self, success, error_msg, ip, port):
         self.client_connect_btn.configure(state="normal")
         if success:
+            self.save_role("client")
             self.status_label.configure(text=f"Status: Connected to {ip}:{port}", text_color="green")
             self.save_known_host(ip, port)
             self.client_connect_btn.pack_forget()
