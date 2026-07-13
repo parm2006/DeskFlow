@@ -44,6 +44,7 @@ class DeskFlowServer:
         self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control'))
         self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
         self.control_network.register_callback('switch_back', self.on_switch_back)
+        self.control_network.register_callback('ui_visibility', self.on_ui_visibility)
         self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
         self.control_network.register_callback('file_manifest_request', self.on_file_manifest_request)
         self.control_network.register_callback('file_manifest_response', self.on_file_manifest_response)
@@ -154,6 +155,18 @@ class DeskFlowServer:
         self.pressed_keys.clear()
         self._offer_file_lane()
 
+    def set_ui_visibility(self, hidden):
+        """Broadcast the requested GUI visibility to the connected client."""
+        return self.control_network.send_message({
+            'type': 'ui_visibility', 'hidden': bool(hidden)
+        })
+
+    def on_ui_visibility(self, data):
+        """Handle a visibility update sent by the peer (GUI may subscribe)."""
+        callback = getattr(self, 'on_ui_visibility_changed', None)
+        if callback:
+            callback(bool(data.get('hidden', False)))
+
     def _offer_file_lane(self):
         token = self.file_network.issue_session()
         self.control_network.send_message({
@@ -258,15 +271,7 @@ class DeskFlowServer:
         has_esc = val in ('esc', 'escape')
         
         if has_ctrl and has_alt and has_shift and has_esc:
-            logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
-            for key in sorted(self.pressed_keys - {'esc', 'escape'}):
-                self.control_network.send_message({
-                    'type': 'key_release',
-                    'key': {'type': 'special', 'value': key},
-                })
-            self.pressed_keys.clear()
-            self.control_network.disconnect()
-            self.data_network.disconnect()
+            self.emergency_exit()
             return
 
         self.control_network.send_message({
@@ -286,6 +291,18 @@ class DeskFlowServer:
             'type': 'key_release',
             'key': key_data
         })
+
+    def emergency_exit(self):
+        """Release forwarded modifiers and disconnect remote control safely."""
+        logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
+        for key in sorted(self.pressed_keys - {'esc', 'escape'}):
+            self.control_network.send_message({
+                'type': 'key_release',
+                'key': {'type': 'special', 'value': key},
+            })
+        self.pressed_keys.clear()
+        self.control_network.disconnect()
+        self.data_network.disconnect()
 
     def on_local_copy(self, snapshot):
         return self.clipboard_sender.submit(snapshot)

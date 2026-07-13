@@ -41,6 +41,7 @@ class DeskFlowClient:
         
         # Setup control network callbacks
         self.control_network.register_callback('layout_config', self.on_layout_config)
+        self.control_network.register_callback('ui_visibility', self.on_ui_visibility)
         self.control_network.register_callback('switch', self.on_switch)
         self.control_network.register_callback('mouse_move', self.on_mouse_move)
         self.control_network.register_callback('mouse_click', self.on_mouse_click)
@@ -239,6 +240,17 @@ class DeskFlowClient:
         self.input_handler.inject_position(
             *client_entry_position(direction, w, h, ratio)
         )
+
+    def set_ui_visibility(self, hidden):
+        """Broadcast the requested GUI visibility to the connected server."""
+        return self.control_network.send_message({
+            'type': 'ui_visibility', 'hidden': bool(hidden)
+        })
+
+    def on_ui_visibility(self, data):
+        callback = getattr(self, 'on_ui_visibility_changed', None)
+        if callback:
+            callback(bool(data.get('hidden', False)))
 
     def on_mouse_move(self, data):
         dx = data.get('dx', 0) * self.speed_scale_x

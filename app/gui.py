@@ -8,10 +8,12 @@ from tkinter import messagebox
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
 from app.file_transfer.toast import TransferToast
+from app.global_hotkeys import GlobalHotkeyListener
 
 logger = logging.getLogger(__name__)
 
 KNOWN_HOSTS_FILE = "known_hosts.json"
+SETTINGS_FILE = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "DeskFlow", "settings.json")
 
 class DeskFlowGUI(ctk.CTk):
     def __init__(self):
@@ -28,10 +30,12 @@ class DeskFlowGUI(ctk.CTk):
         self.server = None
         self.client = None
         self.known_hosts = self.load_known_hosts()
+        self.settings = self.load_settings()
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
         self.overlay = None
         self.overlay_active = False
+        self.ui_hidden = False
         self._fingerprint_decisions = {}
         self._fingerprint_lock = threading.Lock()
         self.transfer_toast = TransferToast(self, self._cancel_transfer)
@@ -128,6 +132,30 @@ class DeskFlowGUI(ctk.CTk):
         self.status_label.grid(row=1, column=0, padx=20, pady=10)
         
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.global_hotkeys = GlobalHotkeyListener(
+            on_background_toggle=lambda: self.after(0, self._toggle_ui_background),
+            on_kill=lambda: self.after(0, self._emergency_exit_and_close),
+        )
+        self.global_hotkeys.start()
+        # Restore the last role after both tabs have been created.
+        self.tabview.set("Client" if self.settings.get("role") == "client" else "Server (Host)")
+
+    def load_settings(self):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_role(self, role):
+        self.settings["role"] = role
+        try:
+            os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f)
+        except OSError as e:
+            logger.warning("Failed to save DeskFlow role: %s", e)
 
     def load_known_hosts(self):
         try:
@@ -161,6 +189,7 @@ class DeskFlowGUI(ctk.CTk):
                 break
 
     def start_server(self):
+        self.save_role("server")
         port = int(self.server_port_entry.get())
         password = self.server_password_entry.get()
         
@@ -183,6 +212,7 @@ class DeskFlowGUI(ctk.CTk):
         )
         self.server.control_network.register_callback('connected', self._on_server_client_connected)
         self.server.control_network.register_callback('disconnected', self._on_server_client_disconnected)
+        self.server.on_ui_visibility_changed = self._apply_remote_ui_visibility
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
@@ -195,6 +225,7 @@ class DeskFlowGUI(ctk.CTk):
             self.status_label.configure(text="Status: Failed to start server", text_color="red")
 
     def connect_client(self):
+        self.save_role("client")
         ip = self.client_ip_entry.get()
         port = int(self.client_port_entry.get())
         password = self.client_password_entry.get()
@@ -211,6 +242,7 @@ class DeskFlowGUI(ctk.CTk):
             on_transfer_status=self._on_transfer_status,
             fingerprint_approval=self._approve_peer_fingerprint,
         )
+        self.client.on_ui_visibility_changed = self._apply_remote_ui_visibility
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
@@ -301,6 +333,35 @@ class DeskFlowGUI(ctk.CTk):
     def _on_transfer_status(self, status):
         self.after(0, lambda: self.transfer_toast.show(status))
 
+    def set_ui_background(self, hidden):
+        """Apply local visibility and ask the peer to do the same."""
+        self._apply_remote_ui_visibility(hidden)
+        peer = self.server if self.server is not None else self.client
+        if peer is not None:
+            try:
+                peer.set_ui_visibility(hidden)
+            except Exception:
+                logger.debug("Peer UI visibility update failed", exc_info=True)
+
+    def _toggle_ui_background(self):
+        self.set_ui_background(not self.ui_hidden)
+
+    def _emergency_exit_and_close(self):
+        if self.server:
+            self.server.emergency_exit()
+        self.on_close()
+
+    def _apply_remote_ui_visibility(self, hidden):
+        def apply():
+            self.ui_hidden = bool(hidden)
+            if hidden:
+                self.withdraw()
+            else:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+        self.after(0, apply)
+
     def _cancel_transfer(self, job_id):
         if self.server and self.server.transfer_controller.status(job_id):
             return self.server.cancel_transfer(job_id)
@@ -309,6 +370,8 @@ class DeskFlowGUI(ctk.CTk):
         return False
 
     def on_close(self):
+        if hasattr(self, "global_hotkeys"):
+            self.global_hotkeys.stop()
         if self.overlay:
             self.hide_overlay()
         if self.server:
