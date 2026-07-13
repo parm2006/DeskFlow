@@ -45,6 +45,7 @@ class DeskFlowServer:
         self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
         self.control_network.register_callback('switch_back', self.on_switch_back)
         self.control_network.register_callback('ui_visibility', self.on_ui_visibility)
+        self.control_network.register_callback('exit_request', self.on_exit_request)
         self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
         self.control_network.register_callback('file_manifest_request', self.on_file_manifest_request)
         self.control_network.register_callback('file_manifest_response', self.on_file_manifest_response)
@@ -166,6 +167,11 @@ class DeskFlowServer:
         callback = getattr(self, 'on_ui_visibility_changed', None)
         if callback:
             callback(bool(data.get('hidden', False)))
+
+    def on_exit_request(self, data):
+        callback = getattr(self, 'on_exit_requested', None)
+        if callback:
+            callback()
 
     def _offer_file_lane(self):
         token = self.file_network.issue_session()
@@ -293,7 +299,7 @@ class DeskFlowServer:
         })
 
     def emergency_exit(self):
-        """Release forwarded modifiers and disconnect remote control safely."""
+        """Release forwarded modifiers, ask peer to exit, and disconnect safely."""
         logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
         for key in sorted(self.pressed_keys - {'esc', 'escape'}):
             self.control_network.send_message({
@@ -301,6 +307,7 @@ class DeskFlowServer:
                 'key': {'type': 'special', 'value': key},
             })
         self.pressed_keys.clear()
+        self.control_network.send_message({'type': 'exit_request'})
         self.control_network.disconnect()
         self.data_network.disconnect()
 

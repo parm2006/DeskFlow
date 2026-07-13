@@ -42,6 +42,7 @@ class DeskFlowClient:
         # Setup control network callbacks
         self.control_network.register_callback('layout_config', self.on_layout_config)
         self.control_network.register_callback('ui_visibility', self.on_ui_visibility)
+        self.control_network.register_callback('exit_request', self.on_exit_request)
         self.control_network.register_callback('switch', self.on_switch)
         self.control_network.register_callback('mouse_move', self.on_mouse_move)
         self.control_network.register_callback('mouse_click', self.on_mouse_click)
@@ -251,6 +252,16 @@ class DeskFlowClient:
         callback = getattr(self, 'on_ui_visibility_changed', None)
         if callback:
             callback(bool(data.get('hidden', False)))
+
+    def on_exit_request(self, data):
+        callback = getattr(self, 'on_exit_requested', None)
+        if callback:
+            callback()
+
+    def request_exit(self):
+        """Ask the peer to exit, then close this client connection."""
+        self.control_network.send_message({'type': 'exit_request'})
+        self.disconnect()
 
     def on_mouse_move(self, data):
         dx = data.get('dx', 0) * self.speed_scale_x

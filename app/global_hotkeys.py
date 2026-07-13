@@ -8,7 +8,7 @@ the normal keyboard capture is stopped.
 import logging
 import threading
 
-from pynput.keyboard import Key, Listener
+from pynput.keyboard import Key, Listener, GlobalHotKeys
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,12 @@ class GlobalHotkeyListener:
 
     _MODIFIERS = frozenset(("ctrl", "alt", "shift"))
 
-    def __init__(self, on_background_toggle=None, on_kill=None, listener_factory=Listener):
+    def __init__(self, on_background_toggle=None, on_kill=None, listener_factory=None):
         self.on_background_toggle = on_background_toggle or (lambda: None)
         self.on_kill = on_kill or (lambda: None)
+        # GlobalHotKeys uses pynput's canonical key resolver and is more
+        # reliable for left/right modifier variants in packaged Windows apps.
+        # A listener factory remains injectable for deterministic unit tests.
         self._listener_factory = listener_factory
         self._listener = None
         self._pressed = set()
@@ -80,10 +83,28 @@ class GlobalHotkeyListener:
                 return False
             self._pressed.clear()
             self._triggered.clear()
-            listener = self._listener_factory(on_press=self._on_press, on_release=self._on_release)
+            if self._listener_factory is None:
+                listener = GlobalHotKeys({
+                    '<ctrl>+<alt>+<shift>+b': self._background_callback,
+                    '<ctrl>+<alt>+<shift>+<esc>': self._kill_callback,
+                })
+            else:
+                listener = self._listener_factory(on_press=self._on_press, on_release=self._on_release)
             self._listener = listener
         listener.start()
         return True
+
+    def _background_callback(self):
+        try:
+            self.on_background_toggle()
+        except Exception:
+            logger.exception("Global background hotkey callback failed")
+
+    def _kill_callback(self):
+        try:
+            self.on_kill()
+        except Exception:
+            logger.exception("Global kill hotkey callback failed")
 
     def stop(self):
         """Stop listening and release all tracked key state."""
@@ -95,4 +116,3 @@ class GlobalHotkeyListener:
             listener.stop()
             return True
         return False
-

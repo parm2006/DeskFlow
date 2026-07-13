@@ -213,6 +213,7 @@ class DeskFlowGUI(ctk.CTk):
         self.server.control_network.register_callback('connected', self._on_server_client_connected)
         self.server.control_network.register_callback('disconnected', self._on_server_client_disconnected)
         self.server.on_ui_visibility_changed = self._apply_remote_ui_visibility
+        self.server.on_exit_requested = lambda: self.after(0, self.on_close)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.server.set_screen_size(screen_width, screen_height)
@@ -243,6 +244,7 @@ class DeskFlowGUI(ctk.CTk):
             fingerprint_approval=self._approve_peer_fingerprint,
         )
         self.client.on_ui_visibility_changed = self._apply_remote_ui_visibility
+        self.client.on_exit_requested = lambda: self.after(0, self.on_close)
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
@@ -349,6 +351,8 @@ class DeskFlowGUI(ctk.CTk):
     def _emergency_exit_and_close(self):
         if self.server:
             self.server.emergency_exit()
+        elif self.client:
+            self.client.request_exit()
         self.on_close()
 
     def _apply_remote_ui_visibility(self, hidden):
