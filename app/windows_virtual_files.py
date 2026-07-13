@@ -110,12 +110,16 @@ class VirtualFileDataObject:
         "EnumDAdvise",
     ]
 
-    def __init__(self, file_set):
+    def __init__(self, file_set, on_performed_drop=None):
         self.file_set = file_set
+        self.on_performed_drop = on_performed_drop
         self.descriptor_format = win32clipboard.RegisterClipboardFormat(
             FILE_GROUP_DESCRIPTOR_FORMAT
         )
         self.contents_format = win32clipboard.RegisterClipboardFormat(FILE_CONTENTS_FORMAT)
+        self.performed_drop_format = win32clipboard.RegisterClipboardFormat(
+            "Performed DropEffect"
+        )
 
     def descriptor_format_etc(self):
         return (
@@ -159,6 +163,17 @@ class VirtualFileDataObject:
         )
 
     def SetData(self, format_etc, medium, release):
+        clipboard_format, target, aspect, index, medium_type = format_etc
+        if (
+            clipboard_format == self.performed_drop_format
+            and target is None
+            and aspect == pythoncom.DVASPECT_CONTENT
+            and index == -1
+            and medium_type & pythoncom.TYMED_HGLOBAL
+        ):
+            if self.on_performed_drop is not None:
+                self.on_performed_drop()
+            return None
         raise COMException(description="SetData is not supported", scode=winerror.E_NOTIMPL)
 
     def EnumFormatEtc(self, direction):
@@ -203,9 +218,11 @@ class VirtualFileDataObject:
         raise COMException(description="unsupported clipboard format", scode=winerror.DV_E_FORMATETC)
 
 
-def publish_virtual_files(file_set):
+def publish_virtual_files(file_set, on_performed_drop=None):
     """Publish virtual files through the OLE clipboard on the calling STA thread."""
-    data_object = VirtualFileDataObject(file_set)
+    data_object = VirtualFileDataObject(
+        file_set, on_performed_drop=on_performed_drop
+    )
     wrapped = util.wrap(data_object, pythoncom.IID_IDataObject)
     pythoncom.OleSetClipboard(wrapped)
     return data_object, wrapped
@@ -276,17 +293,45 @@ class CallbackStream:
     _com_interfaces_ = [pythoncom.IID_IStream]
     _public_methods_ = FileBackedStream._public_methods_
 
-    def __init__(self, read_range, size, position=0, on_read=None):
+    def __init__(
+        self, read_range, size, position=0, on_read=None,
+        on_open=None, on_close=None,
+    ):
         self.read_range = read_range
         self.size = size
         self.position = position
         self.on_read = on_read
+        self.on_open = on_open
+        self.on_close = on_close
+        self.closed = False
         self.lock = threading.Lock()
+        if on_open is not None:
+            on_open()
+
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        callback = None
+        with self.lock:
+            if not self.closed:
+                self.closed = True
+                callback = self.on_close
+        if callback is not None:
+            callback()
 
     def Read(self, count):
         with self.lock:
             offset = self.position
-            data = self.read_range(offset, min(count, self.size - offset))
+            try:
+                data = self.read_range(offset, min(count, self.size - offset))
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1223:
+                    raise COMException(
+                        description="the file operation was cancelled",
+                        scode=-2147023673,
+                    ) from None
+                raise
             self.position += len(data)
             if data and self.on_read is not None:
                 self.on_read(offset, len(data))
@@ -334,11 +379,22 @@ class CallbackStream:
         return (None, pythoncom.STGTY_STREAM, self.size, 0, 0, 0, 0, 0, 0, None)
 
     def Clone(self):
-        return open_callback_stream(self.read_range, self.size, self.position, self.on_read)
+        return open_callback_stream(
+            self.read_range, self.size, self.position, self.on_read,
+            on_open=self.on_open, on_close=self.on_close,
+        )
 
 
-def open_callback_stream(read_range, size, position=0, on_read=None):
-    return util.wrap(CallbackStream(read_range, size, position, on_read), pythoncom.IID_IStream)
+def open_callback_stream(
+    read_range, size, position=0, on_read=None, on_open=None, on_close=None,
+):
+    return util.wrap(
+        CallbackStream(
+            read_range, size, position, on_read,
+            on_open=on_open, on_close=on_close,
+        ),
+        pythoncom.IID_IStream,
+    )
 
 
 def build_file_group_descriptor(files: Iterable[VirtualFile]):

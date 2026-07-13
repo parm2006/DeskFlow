@@ -2,6 +2,8 @@ import logging
 import threading
 from collections import deque
 
+from .controller import TransferCancelled
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,8 @@ class FifoTransferExecutor:
                     sources,
                     announce_manifest=False,
                 )
+            except TransferCancelled:
+                logger.info("File transfer job cancelled")
             except Exception:
                 logger.exception("File transfer job failed")
             finally:

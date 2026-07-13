@@ -14,16 +14,20 @@ from .range_coverage import RangeCoverage
 
 logger = logging.getLogger(__name__)
 
-
 class TransferAbortedError(OSError):
-    pass
+    winerror = 1223
 
 
 class TransferReceiver:
-    def __init__(self, staging_root, controller=None, clock=time.monotonic):
+    def __init__(
+        self, staging_root, controller=None, clock=time.monotonic,
+        timer_factory=threading.Timer, stream_close_grace=1.0,
+    ):
         self.staging_root = Path(staging_root)
         self.controller = controller
         self.clock = clock
+        self.timer_factory = timer_factory
+        self.stream_close_grace = stream_close_grace
         self.lane = None
         self._jobs = {}
         self._progress_queue = queue.Queue()
@@ -71,6 +75,10 @@ class TransferReceiver:
             "started": self.clock(),
             "coverage": {
                 item.relative_path: RangeCoverage(item.size)
+                for item in manifest.items if item.item_type is ItemType.FILE
+            },
+            "stream_activity": {
+                item.relative_path: {"active": 0, "generation": 0}
                 for item in manifest.items if item.item_type is ItemType.FILE
             },
             "paste_started": None,
@@ -150,6 +158,76 @@ class TransferReceiver:
         )
         self._publish_paste_progress(job_id, phase, covered, force=phase is TransferPhase.COMPLETED)
 
+    def record_stream_open(self, job_id, relative_path):
+        normalized = validate_relative_path(relative_path)
+        job = self._jobs[job_id]
+        with job["condition"]:
+            activity = job["stream_activity"][normalized]
+            activity["active"] += 1
+            activity["generation"] += 1
+
+    def record_stream_close(self, job_id, relative_path):
+        normalized = validate_relative_path(relative_path)
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        with job["condition"]:
+            activity = job["stream_activity"][normalized]
+            if activity["active"] <= 0:
+                return False
+            activity["active"] -= 1
+            activity["generation"] += 1
+            generation = activity["generation"]
+            incomplete = job["coverage"][normalized].covered < job["items"][normalized].size
+            if activity["active"] or not incomplete:
+                return True
+        timer = self.timer_factory(
+            self.stream_close_grace,
+            lambda: self._confirm_stream_abandoned(job_id, normalized, generation),
+        )
+        if hasattr(timer, "daemon"):
+            timer.daemon = True
+        timer.start()
+        return True
+
+    def _confirm_stream_abandoned(self, job_id, relative_path, generation):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        with job["condition"]:
+            activity = job["stream_activity"][relative_path]
+            if activity["active"] or activity["generation"] != generation:
+                return False
+            if job["coverage"][relative_path].covered >= job["items"][relative_path].size:
+                return False
+        current = self.controller.status(job_id) if self.controller is not None else None
+        if current is not None and current.is_terminal:
+            return False
+        logger.info("Explorer released an incomplete file stream for job %s", job_id)
+        return self.record_performed_drop(job_id)
+
+    def record_performed_drop(self, job_id):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        covered = self._paste_covered(job)
+        phase = (
+            TransferPhase.COMPLETED
+            if job["network_verified"] and covered == job["manifest"].total_size
+            else TransferPhase.CANCELLED
+        )
+        self._update_paste(job_id, phase, covered, 0.0)
+        if self.lane is not None:
+            self._progress_queue.put({
+                "type": "paste_progress",
+                "job_id": job_id,
+                "phase": phase.value,
+                "bytes_done": covered,
+                "bytes_total": job["manifest"].total_size,
+                "bytes_per_second": 0.0,
+            })
+        return True
+
     def read_range(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
         job = self._jobs[job_id]
@@ -158,14 +236,14 @@ class TransferReceiver:
             return b""
         with job["condition"]:
             while True:
+                if job["error"] is not None:
+                    raise TransferAbortedError(job["error"])
                 completed = job["completed"].get(normalized)
                 if completed is not None:
                     with completed.open("rb") as source:
                         source.seek(offset)
                         return source.read(min(count, item.size - offset))
                 staged = job["staged"].get(normalized)
-                if job["error"] is not None:
-                    raise TransferAbortedError(job["error"])
                 if staged is not None and staged.received_size > offset:
                     return staged.read_available(offset, count)
                 job["condition"].wait()
@@ -179,7 +257,8 @@ class TransferReceiver:
                 staged.abort()
             job["staged"].clear()
             job["error"] = "transfer was cancelled"
-            self._update_paste(job_id, TransferPhase.CANCELLED, self._paste_covered(job), 0.0)
+            if self.controller is not None:
+                self.controller.cancel(job_id)
             job["condition"].notify_all()
         return True
 

@@ -13,6 +13,57 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_early_last_stream_release_cancels_after_grace_period(self):
+        callbacks = []
+
+        class Timer:
+            def __init__(self, delay, callback):
+                callbacks.append(callback)
+
+            def start(self):
+                return None
+
+        item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(
+                Path(directory), controller=controller, timer_factory=Timer
+            )
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 0, 2)
+            receiver.record_stream_close(manifest.job_id, item.relative_path)
+            callbacks.pop()()
+
+        self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
+
+    def test_stream_reopen_invalidates_pending_release_cancellation(self):
+        callbacks = []
+
+        class Timer:
+            def __init__(self, delay, callback):
+                callbacks.append(callback)
+
+            def start(self):
+                return None
+
+        item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(
+                Path(directory), controller=controller, timer_factory=Timer
+            )
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            receiver.record_stream_read(manifest.job_id, item.relative_path, 0, 2)
+            receiver.record_stream_close(manifest.job_id, item.relative_path)
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            callbacks.pop()()
+
+        self.assertNotEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
+
     def test_paste_progress_updates_are_rate_limited(self):
         size = 2 * 1024 * 1024
         item = FileItem("large.bin", ItemType.FILE, size, 1, "0" * 64)
@@ -128,6 +179,18 @@ class TransferReceiverTests(unittest.TestCase):
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.COMPLETED)
         self.assertEqual(controller.status(manifest.job_id).bytes_done, len(content))
 
+    def test_performed_drop_with_incomplete_coverage_cancels_paste(self):
+        item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+
+            receiver.record_performed_drop(manifest.job_id)
+
+        self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
+
     def test_manifest_chunks_and_completion_publish_verified_file(self):
         content = b"DeskFlow received bytes"
         item = FileItem("folder/report.txt", ItemType.FILE, len(content), 123, hashlib.sha256(content).hexdigest())
@@ -215,6 +278,23 @@ class TransferReceiverTests(unittest.TestCase):
 
             self.assertFalse(reader.is_alive())
             self.assertIsInstance(errors[0], TransferAbortedError)
+
+    def test_cancel_prevents_reads_from_already_completed_file(self):
+        content = b"completed before cancel"
+        item = FileItem("done.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id, "relative_path": item.relative_path,
+                "offset": 0, "compressed": False, "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.cancel_job(manifest.job_id)
+
+            with self.assertRaises(TransferAbortedError):
+                receiver.read_range(manifest.job_id, item.relative_path, 0, len(content))
 
     def test_same_relative_path_completes_independently_in_two_jobs(self):
         content = b"same file"
