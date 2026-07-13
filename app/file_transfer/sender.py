@@ -17,6 +17,7 @@ class TransferSender:
         self._paste_lock = threading.Lock()
         if hasattr(lane, "register_callback"):
             lane.register_callback("job_verified", self._on_verified)
+            lane.register_callback("job_cancelled", self._on_cancelled)
             lane.register_callback("paste_progress", self._on_paste_progress)
 
     def send_job(self, manifest, sources, announce_manifest=True):
@@ -55,8 +56,11 @@ class TransferSender:
             verified = threading.Event()
             self._verified[manifest.job_id] = verified
             self.lane.send({"type": "job_complete", "job_id": manifest.job_id})
-            if not verified.wait(30):
-                raise TimeoutError("destination did not verify the file transfer")
+            deadline = self.clock() + 30
+            while not verified.wait(0.1):
+                self._check_cancelled(manifest.job_id)
+                if self.clock() >= deadline:
+                    raise TimeoutError("destination did not verify the file transfer")
             self._waiting(manifest, label)
         except TransferCancelled:
             with self._paste_lock:
@@ -77,6 +81,16 @@ class TransferSender:
 
     def _on_verified(self, metadata, payload):
         event = self._verified.get(metadata.get("job_id"))
+        if event is not None:
+            event.set()
+
+    def _on_cancelled(self, metadata, payload):
+        job_id = metadata.get("job_id")
+        if self.controller is not None:
+            if self.controller.status(job_id) is not None:
+                self.controller.cancel(job_id)
+                self.controller.confirm_cancelled(job_id)
+        event = self._verified.get(job_id)
         if event is not None:
             event.set()
 
