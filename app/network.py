@@ -208,6 +208,10 @@ class NetworkClient(NetworkNode):
     def _pin_path(self, host):
         return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DeskFlow" / "peers" / (host.replace("/", "_") + ".fingerprint")
 
+    def clear_pinned_fingerprint(self, host):
+        """Forget one peer identity so the next approved connection can pair again."""
+        self._pin_path(host).unlink(missing_ok=True)
+
     def connect(self, host, port, callback):
         def _connect_thread():
             try:

@@ -328,9 +328,27 @@ class DeskFlowGUI(ctk.CTk):
             self.client.control_network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
             detail = str(error_msg or "unknown error")
+            if "certificate" in detail.lower() or "fingerprint" in detail.lower():
+                self.status_label.configure(
+                    text="Certificate changed. Re-pair required.",
+                    text_color="red",
+                )
+                if messagebox.askyesno(
+                    "DeskFlow peer identity changed",
+                    "The saved identity for this server no longer matches.\n\n"
+                    "Forget this server's saved identity and pair it again?",
+                    parent=self,
+                ):
+                    self.client.control_network.clear_pinned_fingerprint(ip)
+                    self.client.data_network.clear_pinned_fingerprint(ip)
+                    self.status_label.configure(
+                        text="Saved identity cleared. Click Connect to pair again.",
+                        text_color="orange",
+                    )
+                return
             if "timed out" in detail.lower():
                 message = "Connection timed out. Check the server IP, port, and firewall."
-            elif "certificate" in detail.lower() or "pem" in detail.lower():
+            elif "pem" in detail.lower():
                 message = "Certificate mismatch. Remove the saved peer fingerprint and pair again."
             else:
                 message = f"Connection failed:\n{detail}"
