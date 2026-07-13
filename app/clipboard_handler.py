@@ -8,9 +8,27 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+
+def encode_clipboard_snapshot(snapshot):
+    """Encode a raw clipboard snapshot using DeskFlow's existing wire schema."""
+    payload = {}
+    text = snapshot.get('text')
+    if text:
+        payload['text'] = text
+
+    for key in ('image', 'html', 'rtf'):
+        data = snapshot.get(key)
+        if data:
+            compressed = zlib.compress(data, level=6)
+            payload[key] = base64.b64encode(compressed).decode('utf-8')
+    return payload
+
 class ClipboardHandler:
-    def __init__(self, on_clipboard_change):
+    def __init__(self, on_clipboard_change, on_file_availability=None):
         self.on_clipboard_change = on_clipboard_change
+        self.on_file_availability = on_file_availability
+        self.file_availability = None
+        self._file_drop_format = win32clipboard.CF_HDROP
         self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
@@ -31,6 +49,7 @@ class ClipboardHandler:
             self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
         except:
             pass
+        self._update_file_availability()
         self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
         logger.info("Rich Clipboard polling started (Native Zlib Compression)")
@@ -126,7 +145,7 @@ class ClipboardHandler:
 
         # Record hashes of plain text and image to prevent forwarding back
         self.last_text_hash = self._get_hash(text)
-        self.last_image_hash = self._get_hash(img_b64)
+        self.last_image_hash = self._get_hash(dib_data)
 
         try:
             for _ in range(5):
@@ -164,7 +183,7 @@ class ClipboardHandler:
             self.is_injecting = False
 
     def _read_clipboard(self):
-        payload = {}
+        snapshot = {}
         text_data = None
         dib_data = None
         html_data = None
@@ -194,32 +213,40 @@ class ClipboardHandler:
                 time.sleep(0.1)
                 
         if text_data:
-            payload['text'] = text_data
+            snapshot['text'] = text_data
         if dib_data:
-            try:
-                # Compress native DIB bytes outside of clipboard lock
-                compressed = zlib.compress(dib_data, level=6)
-                payload['image'] = base64.b64encode(compressed).decode('utf-8')
-            except Exception as e:
-                logger.error(f"Failed to compress DIB: {e}")
+            snapshot['image'] = dib_data
 
         if html_data:
-            try:
-                # html_data is raw bytes (utf-8 with windows header)
-                compressed = zlib.compress(html_data, level=6)
-                payload['html'] = base64.b64encode(compressed).decode('utf-8')
-            except Exception as e:
-                logger.error(f"Failed to compress HTML payload: {e}")
+            snapshot['html'] = html_data
 
         if rtf_data:
-            try:
-                # rtf_data is raw bytes (ansi RTF string bytes)
-                compressed = zlib.compress(rtf_data, level=6)
-                payload['rtf'] = base64.b64encode(compressed).decode('utf-8')
-            except Exception as e:
-                logger.error(f"Failed to compress RTF payload: {e}")
+            snapshot['rtf'] = rtf_data
                 
-        return payload
+        return snapshot
+
+    def _update_file_availability(self):
+        try:
+            available = bool(
+                win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP)
+            )
+        except Exception:
+            available = False
+        if available == self.file_availability:
+            return
+        self.file_availability = available
+        if self.on_file_availability:
+            self.on_file_availability(available)
+
+    def read_file_selection(self):
+        win32clipboard.OpenClipboard()
+        try:
+            if not win32clipboard.IsClipboardFormatAvailable(self._file_drop_format):
+                return ()
+            paths = win32clipboard.GetClipboardData(self._file_drop_format)
+            return tuple(paths)
+        finally:
+            win32clipboard.CloseClipboard()
 
     def _poll_clipboard(self):
         while self.is_running:
@@ -230,11 +257,12 @@ class ClipboardHandler:
                 seq = win32clipboard.GetClipboardSequenceNumber()
                 if seq != self.last_sequence_num:
                     self.last_sequence_num = seq
+                    self._update_file_availability()
                     
-                    payload = self._read_clipboard()
-                    if payload:
-                        text = payload.get('text')
-                        image = payload.get('image')
+                    snapshot = self._read_clipboard()
+                    if snapshot:
+                        text = snapshot.get('text')
+                        image = snapshot.get('image')
                         
                         text_hash = self._get_hash(text)
                         image_hash = self._get_hash(image)
@@ -251,7 +279,7 @@ class ClipboardHandler:
                             if is_new_image:
                                 self.last_image_hash = image_hash
                                 
-                            self.on_clipboard_change(payload)
+                            self.on_clipboard_change(snapshot)
             except Exception as e:
                 logger.error(f"Error in poll clipboard: {e}")
             time.sleep(0.5)
