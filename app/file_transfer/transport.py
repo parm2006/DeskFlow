@@ -4,6 +4,8 @@ import socket
 import ssl
 import threading
 import logging
+import os
+from app.crypto import materialize_private_key
 
 from .protocol import (
     MAX_METADATA_SIZE,
@@ -130,7 +132,12 @@ class FileLaneServer(_FileLane):
         self._running = False
         self._authenticator = None
         self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self._context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        temporary_key = materialize_private_key()
+        try:
+            self._context.load_cert_chain(certfile=cert_file, keyfile=temporary_key)
+        finally:
+            try: os.unlink(temporary_key)
+            except OSError: pass
 
     def issue_session(self):
         token = secrets.token_urlsafe(32)

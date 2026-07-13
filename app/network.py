@@ -6,7 +6,9 @@ import logging
 import ssl
 import time
 import hashlib
-from app.crypto import ensure_certificates, CERT_FILE, KEY_FILE
+import os
+from app.crypto import ensure_certificates, CERT_FILE, KEY_FILE, materialize_private_key
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -139,7 +141,12 @@ class NetworkServer(NetworkNode):
         
         ensure_certificates()
         self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self.ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+        temporary_key = materialize_private_key()
+        try:
+            self.ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=temporary_key)
+        finally:
+            try: os.unlink(temporary_key)
+            except OSError: pass
 
     def start(self):
         try:
@@ -191,10 +198,15 @@ class NetworkServer(NetworkNode):
             pass
 
 class NetworkClient(NetworkNode):
-    def __init__(self, password):
+    def __init__(self, password, expected_fingerprint=None, fingerprint_approval=None):
         super().__init__()
         self.is_server = False
         self.password = password
+        self.expected_fingerprint = expected_fingerprint
+        self.fingerprint_approval = fingerprint_approval
+
+    def _pin_path(self, host):
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DeskFlow" / "peers" / (host.replace("/", "_") + ".fingerprint")
 
     def connect(self, host, port, callback):
         def _connect_thread():
@@ -211,6 +223,18 @@ class NetworkClient(NetworkNode):
                 ssl_context.verify_mode = ssl.CERT_NONE
                 
                 self.sock = ssl_context.wrap_socket(raw_sock, server_hostname=host)
+                fingerprint = self.peer_certificate_fingerprint()
+                expected = self.expected_fingerprint
+                pin_path = self._pin_path(host)
+                if expected is None and pin_path.exists():
+                    expected = pin_path.read_text(encoding="ascii").strip()
+                if expected is not None and fingerprint != expected:
+                    raise ssl.SSLError("peer certificate fingerprint changed")
+                if expected is None:
+                    if self.fingerprint_approval is not None and not self.fingerprint_approval(fingerprint, host):
+                        raise ssl.SSLError("peer certificate fingerprint was not approved")
+                    pin_path.parent.mkdir(parents=True, exist_ok=True)
+                    pin_path.write_text(fingerprint, encoding="ascii")
                 self.connected = True
                 self.authenticated = False
                 

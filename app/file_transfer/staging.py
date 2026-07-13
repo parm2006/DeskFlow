@@ -1,6 +1,8 @@
 import hashlib
 import os
 import secrets
+import struct
+from app.dpapi import protect, unprotect
 from pathlib import Path
 
 from .validation import ValidationError, validate_relative_path
@@ -27,7 +29,8 @@ class StagedFile:
         partial_dir = self.root / "partial" / job_id
         partial_dir.mkdir(parents=True, exist_ok=True)
         self.partial_path = partial_dir / f"{secrets.token_hex(16)}.partial"
-        self._file = self.partial_path.open("xb")
+        self._file = self.partial_path.open("x+b")
+        self._encrypted = os.name == "nt"
         self._offset = 0
         self._hash = hashlib.sha256()
 
@@ -40,7 +43,11 @@ class StagedFile:
             raise TypeError("chunk data must be bytes")
         if self._offset + len(data) > self.expected_size:
             raise ValueError("chunk exceeds the declared size")
-        self._file.write(data)
+        if self._encrypted:
+            blob = protect(data)
+            self._file.write(struct.pack(">I", len(blob)) + blob)
+        else:
+            self._file.write(data)
         self._hash.update(data)
         self._offset += len(data)
 
@@ -50,6 +57,16 @@ class StagedFile:
 
     def read_available(self, offset, count):
         self._file.flush()
+        if self._encrypted:
+            plain = bytearray()
+            with self.partial_path.open("rb") as source:
+                while True:
+                    header = source.read(4)
+                    if not header:
+                        break
+                    size = struct.unpack(">I", header)[0]
+                    plain.extend(unprotect(source.read(size)))
+            return bytes(plain[offset:offset + count])
         with self.partial_path.open("rb") as source:
             source.seek(offset)
             return source.read(min(count, self._offset - offset))
@@ -67,7 +84,18 @@ class StagedFile:
         self._file.close()
         destination = self.root / "completed" / self.job_id / Path(*self.relative_path.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
-        os.link(self.partial_path, destination)
+        if self._encrypted:
+            with destination.open("xb") as output:
+                source = self.partial_path.open("rb")
+                while True:
+                    header = source.read(4)
+                    if not header:
+                        break
+                    size = struct.unpack(">I", header)[0]
+                    output.write(unprotect(source.read(size)))
+                source.close()
+        else:
+            os.link(self.partial_path, destination)
         self.partial_path.unlink()
         return destination
 

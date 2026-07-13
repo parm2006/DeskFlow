@@ -6,6 +6,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 import logging
+import tempfile
+from app.dpapi import protect, unprotect
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,7 @@ def ensure_certificates():
         ).sign(private_key, hashes.SHA256())
 
         # Write private key to file
-        with open(KEY_FILE, "wb") as f:
-            f.write(private_key.private_bytes(
+        write_private_key(private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
                 encryption_algorithm=serialization.NoEncryption()
@@ -64,3 +65,34 @@ def ensure_certificates():
     except Exception as e:
         logger.error(f"Failed to generate certificate: {e}")
         return False
+
+def load_private_key_bytes():
+    """Read the DPAPI-protected key, migrating legacy plaintext keys once."""
+    with open(KEY_FILE, "rb") as stream:
+        raw = stream.read()
+    try:
+        decoded = unprotect(raw)
+        if decoded != raw or os.name == "nt":
+            return decoded
+    except Exception:
+        pass
+    if os.name == "nt":
+        protected = protect(raw)
+        with open(KEY_FILE, "wb") as stream:
+            stream.write(protected)
+    return raw
+
+def write_private_key(key_bytes):
+    with open(KEY_FILE, "wb") as stream:
+        stream.write(protect(key_bytes))
+
+def materialize_private_key():
+    """Create a short-lived plaintext key path for libraries that require a filename."""
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pem")
+    handle.write(load_private_key_bytes())
+    handle.close()
+    try:
+        os.chmod(handle.name, 0o600)
+    except OSError:
+        pass
+    return handle.name
