@@ -106,6 +106,12 @@ class DeskFlowGUI(ctk.CTk):
         
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
         self.server_start_btn.pack(pady=10)
+        self.server_pairing_code_label = ctk.CTkLabel(
+            self.tab_server,
+            text="Pairing code will appear when the server starts",
+            text_color="gray",
+        )
+        self.server_pairing_code_label.pack(pady=4)
         self.server_stop_btn = ctk.CTkButton(self.tab_server, text="Stop Server", fg_color="red", hover_color="darkred", command=self.stop_server)
         
         # Client UI
@@ -232,6 +238,14 @@ class DeskFlowGUI(ctk.CTk):
         self.server.set_screen_size(screen_width, screen_height)
         
         if self.server.start():
+            try:
+                code = pairing_code(certificate_fingerprint())
+                self.server_pairing_code_label.configure(
+                    text=f"Pairing code: {code}\nCompare this with the client before approving",
+                    text_color="white",
+                )
+            except Exception:
+                logger.warning("Unable to calculate server pairing code", exc_info=True)
             self.status_label.configure(text=f"Status: Server Listening on port {port}", text_color="green")
             self.server_start_btn.pack_forget()
             self.server_stop_btn.pack(pady=10)

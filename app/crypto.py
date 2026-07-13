@@ -9,7 +9,6 @@ import logging
 import tempfile
 import re
 import hashlib
-import hashlib
 from app.dpapi import protect, unprotect
 
 logger = logging.getLogger(__name__)
@@ -29,6 +28,9 @@ def pairing_code_from_fingerprint(fingerprint):
     if len(compact) < 12:
         return ""
     return "-".join(compact[:12].upper()[i:i + 4] for i in range(0, 12, 4))
+
+# Backwards-compatible short name used by the GUI.
+pairing_code = pairing_code_from_fingerprint
 
 def certificate_fingerprint(cert_file=CERT_FILE):
     """Return the SHA-256 fingerprint of the local PEM certificate."""
@@ -119,14 +121,3 @@ def materialize_private_key():
     except OSError:
         pass
     return handle.name
-
-def certificate_fingerprint():
-    """Return the local certificate SHA-256 fingerprint as lowercase hex."""
-    with open(CERT_FILE, "rb") as stream:
-        certificate = x509.load_pem_x509_certificate(stream.read())
-    return hashlib.sha256(certificate.public_bytes(serialization.Encoding.DER)).hexdigest()
-
-def pairing_code(fingerprint=None):
-    """Return a short code users can compare during first pairing."""
-    value = fingerprint or certificate_fingerprint()
-    return "-".join(value[index:index + 4].upper() for index in range(0, 12, 4))
