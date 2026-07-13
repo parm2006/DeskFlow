@@ -9,3 +9,4 @@ key.pem
 build/
 dist/
 *.spec
+handoffs/
