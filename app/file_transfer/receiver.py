@@ -259,7 +259,10 @@ class TransferReceiver:
             job["error"] = "transfer was cancelled"
             if self.controller is not None:
                 self.controller.cancel(job_id)
+                self.controller.confirm_cancelled(job_id)
             job["condition"].notify_all()
+        if self.lane is not None:
+            self.lane.send({"type": "job_cancelled", "job_id": job_id})
         return True
 
     def _update_paste(self, job_id, phase, bytes_done, speed):
