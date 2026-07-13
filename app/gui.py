@@ -62,12 +62,6 @@ class DeskFlowGUI(ctk.CTk):
         self.server_password_label.pack(pady=2)
         self.server_password_entry = ctk.CTkEntry(self.tab_server, show="*")
         self.server_password_entry.pack(pady=2)
-        self.server_pairing_label = ctk.CTkLabel(
-            self.tab_server,
-            text="Pairing code: start the server to generate",
-            text_color="gray",
-        )
-        self.server_pairing_label.pack(pady=2)
         
         # Layout Selection
         self.layout_label = ctk.CTkLabel(self.tab_server, text="Client Position:")
@@ -230,12 +224,6 @@ class DeskFlowGUI(ctk.CTk):
             on_capture_stop=self.hide_overlay,
             on_transfer_status=self._on_transfer_status,
         )
-        try:
-            self.server_pairing_label.configure(
-                text=f"Pairing code: {pairing_code(certificate_fingerprint())}"
-            )
-        except (OSError, ValueError) as error:
-            logger.warning("Unable to display pairing code: %s", error)
         self.server.control_network.register_callback('connected', self._on_server_client_connected)
         self.server.control_network.register_callback('disconnected', self._on_server_client_disconnected)
         self.server.on_ui_visibility_changed = self._apply_remote_ui_visibility
