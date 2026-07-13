@@ -1,4 +1,4 @@
-# DeskFlow
+# <img src="assets/DeskFlow.ico" width="32" height="32" alt="DeskFlow icon" /> DeskFlow
 
 DeskFlow is a lightweight, wireless KVM utility written in Python. It allows sharing a single mouse, keyboard, and rich clipboard (including text and images) between two computers on the same local network.
 
