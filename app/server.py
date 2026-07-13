@@ -188,6 +188,12 @@ class DeskFlowServer:
                 'ratio': ratio
             })
             self.input_handler.stop() # Stop edge detection
+            # Headless/daemon mode has no Tk overlay to capture mouse events.
+            # The global pynput capture provides the same event stream while
+            # suppressing local input; the GUI overlay remains responsible for
+            # this when callbacks are supplied by DeskFlowGUI.
+            if self.on_capture_start is None:
+                self.input_handler.start_capture()
             self.input_handler.start_keyboard_capture()
             if self.on_capture_start:
                 self.on_capture_start()
