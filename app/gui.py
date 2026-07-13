@@ -2,6 +2,7 @@ import customtkinter as ctk
 import logging
 import json
 import os
+import sys
 import threading
 from tkinter import messagebox
 from app.server import DeskFlowServer
@@ -17,6 +18,10 @@ class DeskFlowGUI(ctk.CTk):
         super().__init__()
         
         self.title("DeskFlow")
+        icon_root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(__file__)))
+        icon_path = os.path.join(icon_root, "assets", "DeskFlow.ico")
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
         self.geometry("310x560")
         self.resizable(False, False)
         
