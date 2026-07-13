@@ -7,12 +7,35 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 import logging
 import tempfile
+import re
+import hashlib
+import hashlib
 from app.dpapi import protect, unprotect
 
 logger = logging.getLogger(__name__)
 
 CERT_FILE = "cert.pem"
 KEY_FILE = "key.pem"
+
+def pairing_code_from_fingerprint(fingerprint):
+    """Return a short, human-readable code derived from a certificate fingerprint.
+
+    The code is only a display aid for the initial pairing check; the complete
+    fingerprint remains the value used for cryptographic pinning.
+    """
+    if not isinstance(fingerprint, str):
+        return ""
+    compact = re.sub(r"[^0-9a-fA-F]", "", fingerprint)
+    if len(compact) < 12:
+        return ""
+    return "-".join(compact[:12].upper()[i:i + 4] for i in range(0, 12, 4))
+
+def certificate_fingerprint(cert_file=CERT_FILE):
+    """Return the SHA-256 fingerprint of the local PEM certificate."""
+    from cryptography import x509
+    with open(cert_file, "rb") as stream:
+        cert = x509.load_pem_x509_certificate(stream.read())
+    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 def ensure_certificates():
     """Generates self-signed certificates if they don't exist."""
@@ -96,3 +119,14 @@ def materialize_private_key():
     except OSError:
         pass
     return handle.name
+
+def certificate_fingerprint():
+    """Return the local certificate SHA-256 fingerprint as lowercase hex."""
+    with open(CERT_FILE, "rb") as stream:
+        certificate = x509.load_pem_x509_certificate(stream.read())
+    return hashlib.sha256(certificate.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+def pairing_code(fingerprint=None):
+    """Return a short code users can compare during first pairing."""
+    value = fingerprint or certificate_fingerprint()
+    return "-".join(value[index:index + 4].upper() for index in range(0, 12, 4))
