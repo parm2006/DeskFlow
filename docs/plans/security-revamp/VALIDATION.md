@@ -58,8 +58,49 @@ not replace visual confirmation on both target PCs.
 
 1. On both PCs, check out the same `fix/security-revamp` commit and confirm
    `git status --short` is empty.
-2. Record both Windows versions, connection type, and negotiated Wi-Fi or
-   Ethernet link speed.
+2. Record the environment on **both computers**, keeping the outputs labelled
+   `SERVER` and `CLIENT`.
+
+   On the **server computer**, open PowerShell in any directory and run:
+
+   ```powershell
+   Get-CimInstance Win32_OperatingSystem |
+       Select-Object Caption, Version, BuildNumber
+
+   Get-NetAdapter |
+       Where-Object Status -eq "Up" |
+       Select-Object Name, MediaType, PhysicalMediaType, LinkSpeed, InterfaceDescription
+   ```
+
+   If the active server adapter is Wi-Fi, also run:
+
+   ```powershell
+   netsh wlan show interfaces
+   ```
+
+   On the **client computer**, run the same commands:
+
+   ```powershell
+   Get-CimInstance Win32_OperatingSystem |
+       Select-Object Caption, Version, BuildNumber
+
+   Get-NetAdapter |
+       Where-Object Status -eq "Up" |
+       Select-Object Name, MediaType, PhysicalMediaType, LinkSpeed, InterfaceDescription
+   ```
+
+   If the active client adapter is Wi-Fi, also run:
+
+   ```powershell
+   netsh wlan show interfaces
+   ```
+
+   Record `Caption`, `Version`, `BuildNumber`, the active adapter name and
+   description, whether it is Wi-Fi or Ethernet, and `LinkSpeed`. For Wi-Fi,
+   also record `Band`, `Radio type`, `Receive rate (Mbps)`, `Transmit rate
+   (Mbps)`, and `Signal` from the connected primary interface. Ignore any
+   disconnected secondary Wi-Fi interface. For Ethernet, skip `netsh` and use
+   the active adapter's `LinkSpeed`.
 3. Start each copy with `run.bat`. Do not start any background/daemon prototype.
 
 ### Recorded target environment (2026-07-13)
