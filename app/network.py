@@ -507,17 +507,22 @@ class NetworkClient(NetworkNode):
 
     def _request_pairing_approval(self, fingerprint, peer):
         result = []
+        errors = []
         finished = threading.Event()
 
         def approve():
             try:
                 result.append(bool(self.fingerprint_approval(fingerprint, peer)))
+            except Exception as error:
+                errors.append(error)
             finally:
                 finished.set()
 
         threading.Thread(target=approve, daemon=True).start()
         if not finished.wait(self.approval_timeout):
             raise PairingTimeout("pairing approval timed out")
+        if errors:
+            raise errors[0]
         return result[0] if result else False
 
     def commit_peer_trust(self):

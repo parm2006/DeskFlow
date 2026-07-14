@@ -5,12 +5,14 @@ import os
 import threading
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
+from app.network import PairingTimeout
 from app.file_transfer.toast import TransferToast
 from app.crypto import certificate_fingerprint, pairing_code_from_fingerprint
 
 logger = logging.getLogger(__name__)
 
 KNOWN_HOSTS_FILE = "known_hosts.json"
+PAIRING_DECISION_TIMEOUT = 60.0
 
 class DeskFlowGUI(ctk.CTk):
     def __init__(self):
@@ -127,9 +129,11 @@ class DeskFlowGUI(ctk.CTk):
 
         self.pairing_frame = ctk.CTkFrame(self.tab_client)
         self.pairing_title = ctk.CTkLabel(
-            self.pairing_frame, text="Compare this code with the server"
+            self.pairing_frame,
+            text="Security check required",
+            font=ctk.CTkFont(size=17, weight="bold"),
         )
-        self.pairing_title.pack(padx=8, pady=(8, 2))
+        self.pairing_title.pack(padx=12, pady=(18, 4))
         self.pairing_details = ctk.CTkTextbox(
             self.pairing_frame, height=105, wrap="word"
         )
@@ -308,8 +312,13 @@ class DeskFlowGUI(ctk.CTk):
                 fingerprint, peer, completed, decision
             ),
         )
-        completed.wait(115)
-        self.after(0, self.pairing_frame.pack_forget)
+        if not completed.wait(PAIRING_DECISION_TIMEOUT):
+            completed.set()
+            self.after(0, self._hide_pairing_prompt)
+            raise PairingTimeout(
+                "pairing approval timed out; connect again and compare the codes"
+            )
+        self.after(0, self._hide_pairing_prompt)
         return decision["approved"]
 
     def _show_pairing_prompt(self, fingerprint, peer, completed, decision):
@@ -318,18 +327,32 @@ class DeskFlowGUI(ctk.CTk):
         self.pairing_details.delete("1.0", "end")
         self.pairing_details.insert(
             "1.0",
+            "Choose Codes match only if this code is identical on the server.\n\n"
             f"Code: {code}\nServer: {peer.canonical}\nFingerprint: {fingerprint}",
         )
         self.pairing_details.configure(state="disabled")
 
         def finish(approved):
+            if completed.is_set():
+                return
             decision["approved"] = approved
             completed.set()
-            self.pairing_frame.pack_forget()
+            self._hide_pairing_prompt()
+            if approved:
+                self._set_status("Status: Pairing approved; authenticating…", "orange")
 
         self.pairing_approve.configure(command=lambda: finish(True))
         self.pairing_decline.configure(command=lambda: finish(False))
-        self.pairing_frame.pack(fill="x", padx=8, pady=8)
+        self.pairing_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.pairing_frame.lift()
+        self._set_status(
+            "Status: Waiting for pairing approval — choose Codes match or Decline.",
+            "orange",
+        )
+
+    def _hide_pairing_prompt(self):
+        self.pairing_frame.place_forget()
+        self.pairing_frame.pack_forget()
 
     def clear_client_trust(self):
         try:

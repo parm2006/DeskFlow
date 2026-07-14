@@ -59,6 +59,17 @@ class NetworkGenerationTests(unittest.TestCase):
         with self.assertRaises(PairingTimeout):
             client._request_pairing_approval("a" * 64, object())
 
+    def test_pairing_ui_timeout_is_preserved_as_a_typed_failure(self):
+        def timed_out(fingerprint, peer):
+            raise PairingTimeout("pairing decision timed out")
+
+        client = NetworkClient(
+            "secret", fingerprint_approval=timed_out,
+            approval_timeout=1,
+        )
+        with self.assertRaisesRegex(PairingTimeout, "decision timed out"):
+            client._request_pairing_approval("a" * 64, object())
+
 
 class SecureControlConnectionTests(unittest.TestCase):
     def setUp(self):
