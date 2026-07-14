@@ -49,11 +49,11 @@ class FilePasteService:
         if not self.handshakes.accept(request_id, manifest):
             return False
         self.receiver.accept_manifest(manifest)
-        self.publisher.publish_and_paste(manifest, self.receiver)
         self.control.send_message({
             "type": "file_manifest_ack",
             "job_id": manifest["job_id"],
         })
+        self.publisher.publish_and_paste(manifest, self.receiver)
         return True
 
     def on_manifest_failed(self, message):

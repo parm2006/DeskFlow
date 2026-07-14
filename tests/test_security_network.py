@@ -4,13 +4,14 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from app.crypto import IdentityStore
 from app.network import (
-    ConnectionPhase, NetworkClient, NetworkNode, NetworkServer,
-    PairingTimeout, PeerIdentityChanged,
+    ConnectionPhase, IncorrectPassword, NetworkClient, NetworkNode,
+    NetworkServer, PairingTimeout, PeerIdentityChanged, ServerUnavailable,
 )
-from app.session import SessionAuthenticationError, SessionCoordinator
+from app.session import SessionCoordinator
 from app.trust import PeerTrustStore
 
 
@@ -175,8 +176,37 @@ class SecureControlConnectionTests(unittest.TestCase):
         bad.disconnect()
         self.assertFalse(result[0])
         self.assertEqual(bad.phase, ConnectionPhase.DISCONNECTED)
-        self.assertIsInstance(bad.last_error, SessionAuthenticationError)
+        self.assertIsInstance(bad.last_error, IncorrectPassword)
+        self.assertEqual(
+            result[1],
+            "Incorrect password. Check the password shown on the server and try again.",
+        )
         self.assertIsNone(self.trust.load(peer))
+
+    def test_refused_connection_is_actionable_and_does_not_expose_os_text(self):
+        event = threading.Event()
+        result = []
+        client = NetworkClient("secret", connect_timeout=0.2)
+
+        with patch(
+            "app.network.socket.create_connection",
+            side_effect=ConnectionRefusedError("private OS detail"),
+        ):
+            client.connect(
+                "127.0.0.1",
+                5000,
+                lambda success, error: (
+                    result.append((success, error)), event.set()
+                ),
+            )
+            self.assertTrue(event.wait(2), "connection callback did not run")
+
+        self.assertFalse(result[0][0])
+        self.assertIsInstance(client.last_error, ServerUnavailable)
+        self.assertEqual(
+            result[0][1],
+            "Could not reach the server. Check its address, port, and that DeskFlow is running.",
+        )
 
     def test_declined_pairing_retains_typed_failure_without_a_pin(self):
         client, result = self.connect(approval=lambda fingerprint, peer: False)

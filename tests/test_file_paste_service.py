@@ -54,6 +54,43 @@ class Manifest:
 
 
 class FilePasteServiceTests(unittest.TestCase):
+    def test_destination_acknowledges_before_async_paste_can_report_failure(self):
+        events = []
+
+        class Control(RecordingControl):
+            def send_message(self, message):
+                events.append(("send", message["type"]))
+                return super().send_message(message)
+
+        class Publisher(RecordingPublisher):
+            def publish_and_paste(self, manifest, receiver):
+                events.append(("publish", manifest["job_id"]))
+                return super().publish_and_paste(manifest, receiver)
+
+        control = Control()
+        receiver = RecordingReceiver()
+        publisher = Publisher()
+        sender = RecordingSender()
+        service = FilePasteService(
+            control=control,
+            receiver=receiver,
+            publisher=publisher,
+            sender=sender,
+            snapshot_selection=lambda: None,
+            executor=ImmediateExecutor(sender),
+        )
+        pending = service.request_paste()
+
+        service.on_manifest_response({
+            "request_id": pending.request_id,
+            "manifest": {"job_id": "A"},
+        })
+
+        self.assertEqual(
+            events,
+            [("send", "file_manifest_request"), ("send", "file_manifest_ack"), ("publish", "A")],
+        )
+
     def make_service(self, snapshots):
         control = RecordingControl()
         receiver = RecordingReceiver()

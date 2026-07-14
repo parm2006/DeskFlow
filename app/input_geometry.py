@@ -1,14 +1,20 @@
-def client_entry_position(direction, width, height, ratio, margin=96):
-    horizontal = max(margin, min(width - margin - 1, int(width * ratio)))
-    vertical = max(margin, min(height - margin - 1, int(height * ratio)))
+def client_entry_position(
+    direction, width, height, ratio, edge_inset=1, ratio_margin=96
+):
+    horizontal = max(
+        ratio_margin, min(width - ratio_margin - 1, int(width * ratio))
+    )
+    vertical = max(
+        ratio_margin, min(height - ratio_margin - 1, int(height * ratio))
+    )
     if direction == "right":
-        return margin, vertical
+        return edge_inset, vertical
     if direction == "left":
-        return width - margin - 1, vertical
+        return width - edge_inset - 2, vertical
     if direction == "top":
-        return horizontal, height - margin - 1
+        return horizontal, height - edge_inset - 2
     if direction == "bottom":
-        return horizontal, margin
+        return horizontal, edge_inset
     raise ValueError(f"unsupported direction: {direction}")
 
 

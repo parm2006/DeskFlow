@@ -291,6 +291,52 @@ class TransferReceiver:
             job["condition"].notify_all()
         return True
 
+    def fail_paste(self, job_id, error_code):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        current = self.controller.status(job_id) if self.controller is not None else None
+        if current is not None and current.is_terminal:
+            return False
+        with job["condition"]:
+            if job["error"] is not None:
+                return False
+            for staged in job["staged"].values():
+                staged.abort()
+            for completed in job["completed"].values():
+                completed.abort()
+            job["staged"].clear()
+            job["completed"].clear()
+            job["error"] = "Windows Explorer did not accept the file paste"
+            job["condition"].notify_all()
+        manifest = job["manifest"]
+        if self.controller is not None:
+            self.controller.update(
+                job_id,
+                TransferPhase.FAILED,
+                _manifest_label(manifest),
+                self._paste_covered(job),
+                manifest.total_size,
+                error_code=error_code,
+            )
+        if self.lane is not None:
+            self._progress_queue.put({
+                "type": "paste_progress",
+                "job_id": job_id,
+                "phase": TransferPhase.FAILED.value,
+                "bytes_done": self._paste_covered(job),
+                "bytes_total": manifest.total_size,
+                "bytes_per_second": 0.0,
+                "error_code": error_code,
+            })
+        return True
+
+    def is_paste_terminal(self, job_id):
+        if job_id in self._cancelled_jobs:
+            return True
+        status = self.controller.status(job_id) if self.controller is not None else None
+        return status is not None and status.is_terminal
+
     def _remember_cancelled(self, job_id):
         self._cancelled_jobs[job_id] = None
         self._cancelled_jobs.move_to_end(job_id)

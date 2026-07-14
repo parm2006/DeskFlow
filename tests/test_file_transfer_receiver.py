@@ -13,6 +13,22 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_paste_failure_is_terminal_and_wakes_waiting_streams(self):
+        item = FileItem("blocked.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+
+            self.assertTrue(receiver.fail_paste(manifest.job_id, "ExplorerStartTimeout"))
+
+            status = controller.status(manifest.job_id)
+            self.assertEqual(status.phase, TransferPhase.FAILED)
+            self.assertEqual(status.error_code, "ExplorerStartTimeout")
+            with self.assertRaises(TransferAbortedError):
+                receiver.read_range(manifest.job_id, item.relative_path, 0, 1)
+
     def test_early_last_stream_release_cancels_after_grace_period(self):
         callbacks = []
 

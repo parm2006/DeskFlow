@@ -41,6 +41,48 @@ class PeerIdentityChanged(ConnectionError):
     safe_for_user = True
 
 
+class IncorrectPassword(ConnectionError):
+    safe_for_user = True
+
+
+class ServerUnavailable(ConnectionError):
+    safe_for_user = True
+
+
+class ConnectionTimedOut(TimeoutError):
+    safe_for_user = True
+
+
+class SecureConnectionFailed(ConnectionError):
+    safe_for_user = True
+
+
+class SecureLaneAuthenticationFailed(ConnectionError):
+    safe_for_user = True
+
+
+def _actionable_connection_error(error, role):
+    if getattr(error, "safe_for_user", False):
+        return error
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return ConnectionTimedOut(
+            "Connection timed out. Check the server address and network, then try again."
+        )
+    if isinstance(error, ssl.SSLError):
+        return SecureConnectionFailed(
+            "Could not establish a secure connection. Restart DeskFlow on both computers and try again."
+        )
+    if isinstance(error, (ConnectionRefusedError, socket.gaierror, OSError)):
+        return ServerUnavailable(
+            "Could not reach the server. Check its address, port, and that DeskFlow is running."
+        )
+    if isinstance(error, SessionAuthenticationError) and role != "control":
+        return SecureLaneAuthenticationFailed(
+            "The secure session could not be completed. Reconnect and try again."
+        )
+    return error
+
+
 class ConnectionPhase(str, Enum):
     DISCONNECTED = "disconnected"
     TLS_CANDIDATE = "tls_candidate"
@@ -476,7 +518,13 @@ class NetworkClient(NetworkNode):
                 _write_message(secure, request)
                 response = _read_message(secure)
                 if response.get("type") == "auth_failure":
-                    raise SessionAuthenticationError("authentication failed")
+                    if self.role == "control":
+                        raise IncorrectPassword(
+                            "Incorrect password. Check the password shown on the server and try again."
+                        )
+                    raise SecureLaneAuthenticationFailed(
+                        "The secure session could not be completed. Reconnect and try again."
+                    )
                 if response.get("type") != "auth_success":
                     raise SessionAuthenticationError("authentication was not acknowledged")
                 if self.role == "control":
@@ -500,6 +548,7 @@ class NetworkClient(NetworkNode):
                 self.receive_thread.start()
                 report(True, None)
             except Exception as error:
+                error = _actionable_connection_error(error, self.role)
                 self.last_error = error
                 self._pending_trust = None
                 self._set_phase(ConnectionPhase.FAILED)

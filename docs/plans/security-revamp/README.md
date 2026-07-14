@@ -11,6 +11,7 @@ Rebuild DeskFlow's identity, pairing, session binding, encrypted staging, cancel
 | [003](003-encrypt-staging-and-cancellation.md) | Encrypt staging and rebuild cancellation | L | 001, 002 | COMPLETE |
 | [004](004-security-ui-and-system-verification.md) | Finish security UI and system verification | L | 001–003 | AUTOMATED COMPLETE; PAIRING UI SUPERSEDED BY 005 |
 | [005](005-client-pairing-modal.md) | Replace embedded pairing approval with a client modal | M | 004 | AUTOMATED COMPLETE; TWO-PC PENDING |
+| [006](006-two-pc-reliability-repair.md) | Repair two-PC reliability and compact security UI | L | 001-005 | AUTOMATED COMPLETE; TWO-PC PENDING |
 
 The authoritative remaining acceptance work and evidence record is
 [VALIDATION.md](VALIDATION.md).
@@ -29,6 +30,9 @@ The authoritative remaining acceptance work and evidence record is
   pairing interaction could be missed. The approved follow-up replaces only the
   client approval view; it does not reopen network, trust, transfer, or daemon
   design.
+- 2026-07-13: Added plan 006 after the first target-PC matrix exposed stale
+  reconnect ownership, repeat-paste lifecycle, remote Delete, cursor entry, and
+  compact-window failures. Background/daemon behavior remains deferred.
 
 ## Considered and rejected
 

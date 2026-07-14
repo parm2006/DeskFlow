@@ -8,22 +8,52 @@ from app.file_transfer.toast import TransferToast
 from app.crypto import certificate_fingerprint, pairing_code_from_fingerprint
 from app.pairing_dialog import PairingApprovalController
 from app.safe_errors import error_name, public_error_message
+from app.preferences import UserPreferences
 
 logger = logging.getLogger(__name__)
 
 KNOWN_HOSTS_FILE = "known_hosts.json"
+
+
+def configure_main_window(window):
+    window.geometry("400x560")
+    window.resizable(False, False)
+
+
+def restore_saved_role(tabview, role):
+    labels = {"server": "Server (Host)", "client": "Client"}
+    label = labels.get(role)
+    if label is not None:
+        tabview.set(label)
+
+
+def parse_port(value):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def save_role_safely(preferences, role):
+    try:
+        preferences.save_role(role)
+        return True
+    except Exception as error:
+        logger.error("Could not save successful DeskFlow role (%s)", error_name(error))
+        return False
 
 class DeskFlowGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         self.title("DeskFlow")
-        self.geometry("420x650")
-        self.minsize(330, 560)
-        self.resizable(True, True)
+        configure_main_window(self)
         
         self.server = None
         self.client = None
+        self.preferences = UserPreferences()
+        saved_role = self.preferences.load_role()
         self.known_hosts = self.load_known_hosts()
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
@@ -45,6 +75,7 @@ class DeskFlowGUI(ctk.CTk):
         
         self.tab_server = self.tabview.add("Server (Host)")
         self.tab_client = self.tabview.add("Client")
+        restore_saved_role(self.tabview, saved_role)
         
         # Server UI
         self.server_port_label = ctk.CTkLabel(self.tab_server, text="Port:")
@@ -168,7 +199,12 @@ class DeskFlowGUI(ctk.CTk):
                 break
 
     def start_server(self):
-        port = int(self.server_port_entry.get())
+        port = parse_port(self.server_port_entry.get())
+        if port is None:
+            self._set_status(
+                "Status: Invalid port\nEnter a number from 1 to 65535.", "red"
+            )
+            return
         password = self.server_password_entry.get()
         
         if not password:
@@ -195,6 +231,7 @@ class DeskFlowGUI(ctk.CTk):
         self.server.set_screen_size(screen_width, screen_height)
         
         if self.server.start():
+            save_role_safely(self.preferences, "server")
             fingerprint = certificate_fingerprint(self.server.identity.cert_path)
             code = pairing_code_from_fingerprint(fingerprint)
             recovery = (
@@ -208,11 +245,20 @@ class DeskFlowGUI(ctk.CTk):
             self.server_start_btn.pack_forget()
             self.server_stop_btn.pack(pady=10)
         else:
-            self._set_status("Status: Failed to start server", "red")
+            self._set_status(
+                "Status: Could not start server\n"
+                "Check whether the selected port is already in use.",
+                "red",
+            )
 
     def connect_client(self):
         ip = self.client_ip_entry.get()
-        port = int(self.client_port_entry.get())
+        port = parse_port(self.client_port_entry.get())
+        if port is None:
+            self._set_status(
+                "Status: Invalid port\nEnter a number from 1 to 65535.", "red"
+            )
+            return
         password = self.client_password_entry.get()
         
         if not password:
@@ -222,30 +268,40 @@ class DeskFlowGUI(ctk.CTk):
         if self.client:
             self.client.disconnect()
             
-        self.client = DeskFlowClient(
+        client = DeskFlowClient(
             password=password,
             on_transfer_status=self._on_transfer_status,
             fingerprint_approval=self._approve_fingerprint,
         )
-        self.client.control_network.register_callback(
-            'disconnected', self._on_client_disconnected_event
+        self.client = client
+        client.control_network.register_callback(
+            'disconnected',
+            lambda data, source=client: self._on_client_disconnected_event(source, data),
         )
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        self.client.set_screen_size(screen_width, screen_height)
+        client.set_screen_size(screen_width, screen_height)
         
         self._set_status(f"Status: Connecting to {ip}:{port}...", "orange")
         self.client_connect_btn.configure(state="disabled")
         
         def _on_connect_result(success, error_msg):
             # This is called from a background thread, use after() to update GUI safely
-            self.after(0, lambda: self._handle_connect_result(success, error_msg, ip, port))
+            self.after(
+                0,
+                lambda: self._handle_connect_result(
+                    client, success, error_msg, ip, port
+                ),
+            )
             
-        self.client.connect(ip, port, _on_connect_result)
+        client.connect(ip, port, _on_connect_result)
 
-    def _handle_connect_result(self, success, error_msg, ip, port):
+    def _handle_connect_result(self, source, success, error_msg, ip, port):
+        if self.client is not source:
+            return
         self.client_connect_btn.configure(state="normal")
         if success:
+            save_role_safely(self.preferences, "client")
             self._set_status(f"Status: Connected to {ip}:{port}", "green")
             self.save_known_host(ip, port)
             self.client_connect_btn.pack_forget()
@@ -262,9 +318,9 @@ class DeskFlowGUI(ctk.CTk):
         self._set_status("Status: Server stopped", "gray")
 
     def disconnect_client(self):
-        if self.client:
-            self.client.disconnect()
-            self.client = None
+        client, self.client = self.client, None
+        if client:
+            client.disconnect()
         self.client_disconnect_btn.pack_forget()
         self.client_connect_btn.pack(pady=10)
         self._set_status("Status: Disconnected", "gray")
@@ -303,8 +359,12 @@ class DeskFlowGUI(ctk.CTk):
                 "red",
             )
 
-    def _on_client_disconnected_event(self, data):
-        self.after(0, self.disconnect_client)
+    def _on_client_disconnected_event(self, source, data):
+        self.after(0, lambda: self._finish_client_disconnect(source))
+
+    def _finish_client_disconnect(self, source):
+        if self.client is source:
+            self.disconnect_client()
 
     def _on_transfer_status(self, status):
         self.after(0, lambda: self.transfer_toast.show(status))
@@ -323,7 +383,8 @@ class DeskFlowGUI(ctk.CTk):
         if self.server:
             self.server.stop()
         if self.client:
-            self.client.disconnect()
+            client, self.client = self.client, None
+            client.disconnect()
         self.destroy()
 
     def _init_overlay(self):

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from app.client import DeskFlowClient
 from app.server import DeskFlowServer
-from app.network import ConnectionPhase, NetworkClient
+from app.network import ConnectionPhase, NetworkClient, ServerUnavailable
 
 
 class RecordingControl:
@@ -44,6 +44,32 @@ class RecordingFileClient:
 
 
 class FileLaneLifecycleTests(unittest.TestCase):
+    def test_control_failure_preserves_actionable_message_without_socket_jargon(self):
+        message = (
+            "Could not reach the server. Check its address, port, and that "
+            "DeskFlow is running."
+        )
+
+        class Control:
+            last_error = ServerUnavailable(message)
+
+            def connect(self, host, port, callback):
+                callback(False, message)
+
+            def disconnect(self, **kwargs):
+                return True
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.control_network = Control()
+        client.data_network = None
+        client.file_network = SimpleNamespace(close=lambda: None)
+        client._disconnecting = False
+        results = []
+
+        client.connect("192.0.2.1", 5000, lambda success, error: results.append((success, error)))
+
+        self.assertEqual(results, [(False, message)])
+
     def test_failure_preserving_disconnect_retains_failed_attempt_phase(self):
         client = DeskFlowClient.__new__(DeskFlowClient)
         client._connect_lock = threading.RLock()
@@ -79,7 +105,13 @@ class FileLaneLifecycleTests(unittest.TestCase):
 
         client._on_lane_binding_timeout()
 
-        self.assertEqual(results, [(False, "Connection timed out while binding secure lanes")])
+        self.assertEqual(
+            results,
+            [(
+                False,
+                "Connection timed out before setup finished. Check the network and try again.",
+            )],
+        )
         self.assertEqual(client.control_network.phase, ConnectionPhase.FAILED)
         self.assertIsInstance(client.control_network.last_error, TimeoutError)
         self.assertEqual(client.data_network.phase, ConnectionPhase.FAILED)

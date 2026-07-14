@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
-from app.file_transfer.sender import TransferSender
+from app.file_transfer.sender import DestinationPasteError, TransferSender
 from app.file_transfer.source import SourceFile
 from app.file_transfer.controller import TransferCancelled, TransferController
 from app.file_transfer.status import TransferPhase
@@ -42,6 +42,47 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_early_destination_failure_is_replayed_when_source_job_registers(self):
+        class Lane:
+            def __init__(self):
+                self.callbacks = {}
+                self.sent = []
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                self.sent.append(metadata)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "empty.txt"
+            path.write_bytes(b"")
+            source = SourceFile.snapshot(path)
+            manifest = Manifest.create([
+                FileItem("empty.txt", ItemType.FILE, 0, source.modified_ns, source.sha256)
+            ])
+            lane = Lane()
+            controller = TransferController()
+            sender = TransferSender(lane, controller=controller)
+
+            self.assertTrue(sender._on_paste_progress({
+                "job_id": manifest.job_id,
+                "phase": "failed",
+                "bytes_done": 0,
+                "bytes_total": 0,
+                "bytes_per_second": 0,
+                "error_code": "PasteInjectionFailed",
+            }, b""))
+
+            with self.assertRaises(DestinationPasteError):
+                sender.send_job(
+                    manifest, {"empty.txt": source}, announce_manifest=False
+                )
+
+        self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.FAILED)
+        self.assertEqual(controller.status(manifest.job_id).error_code, "PasteInjectionFailed")
+        self.assertEqual(lane.sent, [])
+
     def test_cancellation_during_verification_is_not_treated_as_success(self):
         class WaitingLane:
             def __init__(self):
@@ -170,6 +211,54 @@ class TransferSenderTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertEqual(controller.status("job").phase, TransferPhase.CANCELLED)
+
+    def test_remote_explorer_failure_closes_source_status_with_safe_code(self):
+        controller = TransferController()
+        lane = type(
+            "Lane", (),
+            {
+                "callbacks": {},
+                "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb),
+            },
+        )()
+        sender = TransferSender(lane, controller=controller)
+        sender._paste_jobs["job"] = ("file.bin", 100)
+        controller.update("job", TransferPhase.WAITING_FOR_EXPLORER, "file.bin", 0, 0)
+
+        handled = sender._on_paste_progress({
+            "job_id": "job", "phase": "failed", "bytes_done": 0,
+            "bytes_total": 100, "bytes_per_second": 0,
+            "error_code": "ExplorerStartTimeout",
+        }, b"")
+
+        self.assertTrue(handled)
+        self.assertEqual(controller.status("job").phase, TransferPhase.FAILED)
+        self.assertEqual(
+            controller.status("job").error_code, "ExplorerStartTimeout"
+        )
+
+    def test_unknown_remote_failure_code_is_normalized_before_status(self):
+        controller = TransferController()
+        lane = type(
+            "Lane", (),
+            {
+                "callbacks": {},
+                "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb),
+            },
+        )()
+        sender = TransferSender(lane, controller=controller)
+        sender._paste_jobs["job"] = ("file.bin", 100)
+        controller.update("job", TransferPhase.WAITING_FOR_EXPLORER, "file.bin", 0, 0)
+
+        sender._on_paste_progress({
+            "job_id": "job", "phase": "failed", "bytes_done": 0,
+            "bytes_total": 100, "bytes_per_second": 0,
+            "error_code": r"C:\Users\private\secret.txt",
+        }, b"")
+
+        self.assertEqual(
+            controller.status("job").error_code, "DestinationPasteFailed"
+        )
 
     def test_late_network_verification_cannot_reset_active_explorer_progress(self):
         controller = TransferController()

@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from .compression import encode_chunk, should_compress
 from .models import ItemType
 from .validation import validate_manifest
@@ -7,6 +8,21 @@ import time
 import threading
 
 
+class DestinationPasteError(RuntimeError):
+    pass
+
+
+SAFE_DESTINATION_ERROR_CODES = frozenset((
+    "ClipboardPublishFailed",
+    "PasteInjectionFailed",
+    "ExplorerStartTimeout",
+))
+
+
+def _safe_destination_error_code(value):
+    return value if value in SAFE_DESTINATION_ERROR_CODES else "DestinationPasteFailed"
+
+
 class TransferSender:
     def __init__(self, lane, controller=None, clock=time.monotonic):
         self.lane = lane
@@ -14,6 +30,8 @@ class TransferSender:
         self.clock = clock
         self._verified = {}
         self._paste_jobs = {}
+        self._early_paste_terminal = OrderedDict()
+        self._early_paste_limit = 256
         self._paste_lock = threading.Lock()
         if hasattr(lane, "register_callback"):
             lane.register_callback("job_verified", self._on_verified)
@@ -25,10 +43,19 @@ class TransferSender:
         bytes_done = 0
         with self._paste_lock:
             self._paste_jobs[manifest.job_id] = (label, manifest.total_size)
+            early_terminal = self._early_paste_terminal.pop(manifest.job_id, None)
         self._waiting(manifest, label)
         if announce_manifest:
             self.lane.send({"type": "manifest", "manifest": manifest.to_wire()})
         try:
+            if early_terminal is not None:
+                self._on_paste_progress(early_terminal, b"")
+                phase = TransferPhase(early_terminal["phase"])
+                if phase is TransferPhase.CANCELLED:
+                    raise TransferCancelled(manifest.job_id)
+                raise DestinationPasteError(
+                    _safe_destination_error_code(early_terminal.get("error_code"))
+                )
             for item in manifest.items:
                 if item.item_type is ItemType.DIRECTORY:
                     continue
@@ -84,13 +111,33 @@ class TransferSender:
 
     def _on_paste_progress(self, metadata, payload):
         job_id = metadata.get("job_id")
+        try:
+            phase = TransferPhase(metadata.get("phase"))
+        except (TypeError, ValueError):
+            return False
         with self._paste_lock:
             job = self._paste_jobs.get(job_id)
         if job is None:
-            return False
+            if phase not in {TransferPhase.FAILED, TransferPhase.CANCELLED}:
+                return False
+            bytes_done = metadata.get("bytes_done")
+            bytes_total = metadata.get("bytes_total")
+            speed = metadata.get("bytes_per_second", 0.0)
+            if (
+                not isinstance(job_id, str)
+                or not isinstance(bytes_done, int) or bytes_done < 0
+                or not isinstance(bytes_total, int) or bytes_total < bytes_done
+                or not isinstance(speed, (int, float)) or speed < 0
+            ):
+                return False
+            with self._paste_lock:
+                self._early_paste_terminal[job_id] = dict(metadata)
+                self._early_paste_terminal.move_to_end(job_id)
+                while len(self._early_paste_terminal) > self._early_paste_limit:
+                    self._early_paste_terminal.popitem(last=False)
+            return True
         label, expected_total = job
         try:
-            phase = TransferPhase(metadata.get("phase"))
             bytes_done = metadata.get("bytes_done")
             bytes_total = metadata.get("bytes_total")
             speed = metadata.get("bytes_per_second", 0.0)
@@ -98,6 +145,7 @@ class TransferSender:
                 TransferPhase.PASTING,
                 TransferPhase.COMPLETED,
                 TransferPhase.CANCELLED,
+                TransferPhase.FAILED,
             }:
                 return False
             if not isinstance(bytes_done, int) or not 0 <= bytes_done <= expected_total:
@@ -110,8 +158,19 @@ class TransferSender:
         if current is not None and bytes_done < current.bytes_done:
             return False
         if self.controller:
-            self.controller.update(job_id, phase, label, bytes_done, bytes_total, speed)
-        if phase in {TransferPhase.COMPLETED, TransferPhase.CANCELLED}:
+            self.controller.update(
+                job_id, phase, label, bytes_done, bytes_total, speed,
+                error_code=(
+                    _safe_destination_error_code(metadata.get("error_code"))
+                    if phase is TransferPhase.FAILED
+                    else None
+                ),
+            )
+        if phase in {
+            TransferPhase.COMPLETED,
+            TransferPhase.CANCELLED,
+            TransferPhase.FAILED,
+        }:
             with self._paste_lock:
                 self._paste_jobs.pop(job_id, None)
         return True

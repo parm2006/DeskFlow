@@ -10,11 +10,22 @@ from app.input_geometry import (
 
 
 class InputGeometryTests(unittest.TestCase):
-    def test_client_entry_is_inset_from_its_return_edge(self):
-        self.assertEqual(client_entry_position("right", 1920, 1080, 0.5), (96, 540))
-        self.assertEqual(client_entry_position("left", 1920, 1080, 0.5), (1823, 540))
-        self.assertEqual(client_entry_position("top", 1920, 1080, 0.5), (960, 983))
-        self.assertEqual(client_entry_position("bottom", 1920, 1080, 0.5), (960, 96))
+    def test_client_entry_is_visually_at_edge_without_triggering_return(self):
+        positions = {
+            "right": client_entry_position("right", 1920, 1080, 0.5),
+            "left": client_entry_position("left", 1920, 1080, 0.5),
+            "top": client_entry_position("top", 1920, 1080, 0.5),
+            "bottom": client_entry_position("bottom", 1920, 1080, 0.5),
+        }
+
+        self.assertEqual(positions["right"], (1, 540))
+        self.assertEqual(positions["left"], (1917, 540))
+        self.assertEqual(positions["top"], (960, 1077))
+        self.assertEqual(positions["bottom"], (960, 1))
+        self.assertGreater(positions["right"][0], 0)
+        self.assertLess(positions["left"][0], 1920 - 2)
+        self.assertLess(positions["top"][1], 1080 - 2)
+        self.assertGreater(positions["bottom"][1], 0)
 
     def test_overlay_geometry_uses_work_area_instead_of_fullscreen(self):
         self.assertEqual(work_area_geometry((0, 0, 1920, 1040)), "1920x1040+0+0")

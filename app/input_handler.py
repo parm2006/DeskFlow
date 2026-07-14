@@ -1,15 +1,43 @@
 import logging
+import os
 from pynput.mouse import Controller as MouseController, Listener as MouseListener, Button
 from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener, Key, KeyCode
 from app.safe_errors import error_name
 
 logger = logging.getLogger(__name__)
 
+
+class WindowsSpecialKeyInjector:
+    KEYEVENTF_KEYUP = 0x0002
+    VIRTUAL_KEYS = {"delete": 0x2E}
+
+    def __init__(self, user32=None):
+        if user32 is None:
+            import ctypes
+            user32 = ctypes.windll.user32
+        self.user32 = user32
+
+    def press(self, name):
+        return self._emit(name, 0)
+
+    def release(self, name):
+        return self._emit(name, self.KEYEVENTF_KEYUP)
+
+    def _emit(self, name, flags):
+        virtual_key = self.VIRTUAL_KEYS.get(name)
+        if virtual_key is None:
+            return False
+        self.user32.keybd_event(virtual_key, 0, flags, 0)
+        return True
+
 class InputHandler:
     def __init__(self):
         self.mouse = MouseController()
         self.mouse_listener = None
         self.keyboard = KeyboardController()
+        self.special_key_injector = (
+            WindowsSpecialKeyInjector() if os.name == "nt" else None
+        )
         self.keyboard_listener = None
         self.callbacks = {}
         
@@ -186,11 +214,23 @@ class InputHandler:
         self.mouse.scroll(dx, dy)
 
     def inject_key_press(self, key_data):
+        if (
+            key_data and key_data.get('type') == 'special'
+            and self.special_key_injector is not None
+            and self.special_key_injector.press(key_data.get('value'))
+        ):
+            return
         key = self._deserialize_key(key_data)
         if key:
             self.keyboard.press(key)
 
     def inject_key_release(self, key_data):
+        if (
+            key_data and key_data.get('type') == 'special'
+            and self.special_key_injector is not None
+            and self.special_key_injector.release(key_data.get('value'))
+        ):
+            return
         key = self._deserialize_key(key_data)
         if key:
             self.keyboard.release(key)

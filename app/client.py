@@ -119,7 +119,9 @@ class DeskFlowClient:
             error = ConnectionError(self.connect_error)
             self.disconnect(preserve_failure=True, error=error)
             self._report_connect(
-                False, "Secure session disconnected before all lanes were ready"
+                False,
+                "Connection was interrupted before setup finished. "
+                "Check the network and try again.",
             )
         else:
             self.disconnect()
@@ -168,7 +170,7 @@ class DeskFlowClient:
                     preserve_failure=True,
                     error=self.control_network.last_error or ConnectionError(err),
                 )
-                self._report_connect(False, f"Control Socket Error: {err}")
+                self._report_connect(False, err)
 
         def _data_callback(success, err):
             if success:
@@ -180,7 +182,7 @@ class DeskFlowClient:
                     preserve_failure=True,
                     error=self.data_network.last_error or ConnectionError(err),
                 )
-                self._report_connect(False, f"Data Socket Error: {err}")
+                self._report_connect(False, err)
 
         self.control_network.connect(host, port, _control_callback)
 
@@ -250,7 +252,11 @@ class DeskFlowClient:
         error = TimeoutError("secondary lanes did not bind before the deadline")
         self.connect_error = str(error)
         self.disconnect(preserve_failure=True, error=error)
-        self._report_connect(False, "Connection timed out while binding secure lanes")
+        self._report_connect(
+            False,
+            "Connection timed out before setup finished. "
+            "Check the network and try again.",
+        )
 
     def disconnect(self, preserve_failure=False, error=None):
         if hasattr(self, '_connect_lock'):
