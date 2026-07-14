@@ -39,6 +39,13 @@ staging at 127.1 MiB/s. A separate staging run measured 163.8 MiB/s encrypted
 writes and 412.3 MiB/s authenticated range reads. These are loopback safety
 checks, not substitutes for the LAN measurement below.
 
+The real Windows CustomTkinter runtime was also exercised locally. The root was
+resizable, and the status/tab width changed from 660 px at a 700 px window to
+310 px at a 350 px window. The read-only status used word wrapping and allowed
+text selection. The inline pairing panel displayed the expected short code and
+full fingerprint, recorded approval, and hid after the decision. This validates
+widget behavior but does not replace visual confirmation on both target PCs.
+
 ## Two-PC prerequisites
 
 1. On both PCs, check out the same `fix/security-revamp` commit and confirm
