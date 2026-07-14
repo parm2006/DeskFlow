@@ -6,6 +6,7 @@
 - **Risk**: HIGH
 - **Depends on**: 001, 002
 - **Planned at**: `8b329d8`, 2026-07-13
+- **Completed at**: `f995183`, 2026-07-13
 
 ## Current state and intent
 
@@ -24,4 +25,3 @@
 - Range work scales with intersecting records.
 - Both peers converge on cancelled state without message echo.
 - Late frames cannot recreate files or poison the next job.
-

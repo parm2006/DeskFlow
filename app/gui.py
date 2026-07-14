@@ -243,6 +243,9 @@ class DeskFlowGUI(ctk.CTk):
             on_transfer_status=self._on_transfer_status,
             fingerprint_approval=self._approve_fingerprint,
         )
+        self.client.control_network.register_callback(
+            'disconnected', self._on_client_disconnected_event
+        )
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
@@ -263,7 +266,6 @@ class DeskFlowGUI(ctk.CTk):
             self.save_known_host(ip, port)
             self.client_connect_btn.pack_forget()
             self.client_disconnect_btn.pack(pady=10)
-            self.client.control_network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
             self._set_status(f"Status: Connection failed\n{error_msg}", "red")
 

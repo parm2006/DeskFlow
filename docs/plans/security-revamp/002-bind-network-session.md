@@ -6,6 +6,7 @@
 - **Risk**: HIGH
 - **Depends on**: 001
 - **Planned at**: `8b329d8`, 2026-07-13
+- **Completed at**: `f995183`, 2026-07-13
 
 ## Current state and intent
 
@@ -24,4 +25,3 @@ Control and data servers authenticate independently with booleans, handshakes ca
 - Two clients cannot contribute different lanes to one connection.
 - Token replay and cross-purpose use fail.
 - All sockets and worker lifetimes have one cleanup owner.
-

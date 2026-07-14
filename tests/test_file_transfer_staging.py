@@ -3,10 +3,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.file_transfer.staging import IntegrityError, StagedFile
+from app.file_transfer.staging import (
+    IntegrityError, StagedFile, cleanup_staging_root,
+)
 
 
 class StagedFileTests(unittest.TestCase):
+    def test_startup_cleanup_removes_unrecoverable_partial_and_completed_ciphertext(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            partial = root / "partial" / "old" / "x.partial"
+            completed = root / "completed" / "old" / "x.cache"
+            partial.parent.mkdir(parents=True)
+            completed.parent.mkdir(parents=True)
+            partial.write_bytes(b"ciphertext")
+            completed.write_bytes(b"ciphertext")
+
+            cleanup_staging_root(root)
+
+            self.assertFalse((root / "partial").exists())
+            self.assertFalse((root / "completed").exists())
+
     def test_tail_range_lookup_visits_only_the_intersecting_record(self):
         class CountingRecords(list):
             def __init__(self, values):

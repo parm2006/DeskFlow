@@ -1,8 +1,10 @@
 import unittest
+import threading
 from types import SimpleNamespace
 
 from app.client import DeskFlowClient
 from app.server import DeskFlowServer
+from app.network import ConnectionPhase, NetworkClient
 
 
 class RecordingControl:
@@ -42,6 +44,191 @@ class RecordingFileClient:
 
 
 class FileLaneLifecycleTests(unittest.TestCase):
+    def test_failure_preserving_disconnect_retains_failed_attempt_phase(self):
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client._connect_lock = threading.RLock()
+        client._disconnecting = False
+        client.control_network = NetworkClient("secret")
+        client.data_network = None
+        client.file_network = SimpleNamespace(close=lambda: None)
+        error = ConnectionError("lane binding failed")
+
+        client.disconnect(preserve_failure=True, error=error)
+
+        self.assertEqual(client.control_network.phase, ConnectionPhase.FAILED)
+        self.assertIs(client.control_network.last_error, error)
+
+    def test_lane_binding_timeout_closes_lanes_and_retains_typed_failure(self):
+        class FileLane:
+            def __init__(self):
+                self.closes = 0
+
+            def close(self):
+                self.closes += 1
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client._connect_lock = threading.RLock()
+        client._disconnecting = False
+        client._connect_callback_done = False
+        results = []
+        client._connect_callback = lambda success, error: results.append((success, error))
+        client._connect_deadline = None
+        client.control_network = NetworkClient("secret")
+        client.data_network = NetworkClient("unused", role="data")
+        client.file_network = FileLane()
+
+        client._on_lane_binding_timeout()
+
+        self.assertEqual(results, [(False, "Connection timed out while binding secure lanes")])
+        self.assertEqual(client.control_network.phase, ConnectionPhase.FAILED)
+        self.assertIsInstance(client.control_network.last_error, TimeoutError)
+        self.assertEqual(client.data_network.phase, ConnectionPhase.FAILED)
+        self.assertIsInstance(client.data_network.last_error, TimeoutError)
+        self.assertEqual(client.file_network.closes, 1)
+
+    def test_disconnect_during_ready_transition_cannot_report_success(self):
+        class Lifecycle:
+            def __init__(self):
+                self.starts = 0
+                self.stops = 0
+
+            def start(self):
+                self.starts += 1
+
+            def stop(self):
+                self.stops += 1
+
+        entered_commit = threading.Event()
+        release_commit = threading.Event()
+
+        class Control:
+            connected = True
+            disconnects = 0
+
+            def commit_peer_trust(self):
+                entered_commit.set()
+                release_commit.wait(1)
+                return True
+
+            def disconnect(self, **kwargs):
+                self.disconnects += 1
+                self.connected = False
+
+        class Lane:
+            def __init__(self, sock=object()):
+                self.connected = True
+                self.sock = sock
+                self.disconnects = 0
+
+            def disconnect(self, **kwargs):
+                self.disconnects += 1
+                self.connected = False
+
+            def close(self):
+                self.disconnects += 1
+                self.sock = None
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client._connect_lock = threading.RLock()
+        client._connect_callback_done = False
+        client._connect_callback = lambda success, error: results.append((success, error))
+        client._connect_deadline = None
+        client._ready_started = False
+        client._disconnecting = False
+        client.connect_error = None
+        client.control_connected = True
+        client.data_connected = True
+        client.file_connected = True
+        client.control_network = Control()
+        client.data_network = Lane()
+        client.file_network = Lane()
+        client.clipboard = Lifecycle()
+        client.hotkey_monitor = Lifecycle()
+        results = []
+
+        ready = threading.Thread(target=client._maybe_finish_connect)
+        ready.start()
+        self.assertTrue(entered_commit.wait(1))
+        client.control_network.connected = False
+        client.data_network.connected = False
+        client.file_network.sock = None
+        release_commit.set()
+        ready.join(1)
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0][0])
+        self.assertEqual(client.clipboard.starts, 0)
+        self.assertEqual(client.hotkey_monitor.starts, 0)
+        self.assertEqual(client.control_network.disconnects, 1)
+        self.assertEqual(client.data_network.disconnects, 1)
+        self.assertEqual(client.file_network.disconnects, 1)
+
+    def test_partial_service_start_is_rolled_back_and_all_lanes_disconnect(self):
+        class Lifecycle:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.starts = 0
+                self.stops = 0
+
+            def start(self):
+                self.starts += 1
+                if self.fail:
+                    raise RuntimeError("service start failed")
+
+            def stop(self):
+                self.stops += 1
+
+        class Network:
+            def __init__(self):
+                self.connected = True
+                self.disconnects = []
+
+            def commit_peer_trust(self):
+                return True
+
+            def disconnect(self, **kwargs):
+                self.disconnects.append(kwargs)
+                self.connected = False
+
+        class FileLane:
+            def __init__(self):
+                self.sock = object()
+                self.closes = 0
+
+            def close(self):
+                self.closes += 1
+                self.sock = None
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client._connect_lock = threading.RLock()
+        client._connect_callback_done = False
+        results = []
+        client._connect_callback = lambda success, error: results.append((success, error))
+        client._connect_deadline = None
+        client._ready_started = False
+        client._disconnecting = False
+        client.connect_error = None
+        client.control_connected = True
+        client.data_connected = True
+        client.file_connected = True
+        client.control_network = Network()
+        client.data_network = Network()
+        client.file_network = FileLane()
+        client.clipboard = Lifecycle()
+        client.hotkey_monitor = Lifecycle(fail=True)
+
+        self.assertFalse(client._maybe_finish_connect())
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0][0])
+        self.assertEqual(client.clipboard.starts, 1)
+        self.assertGreaterEqual(client.clipboard.stops, 1)
+        self.assertGreaterEqual(client.hotkey_monitor.stops, 1)
+        self.assertEqual(len(client.control_network.disconnects), 1)
+        self.assertTrue(client.control_network.disconnects[0]["preserve_failure"])
+        self.assertEqual(len(client.data_network.disconnects), 1)
+        self.assertEqual(client.file_network.closes, 1)
+
     def test_server_offers_one_use_file_session_over_control_lane(self):
         server = DeskFlowServer.__new__(DeskFlowServer)
         server.control_network = RecordingControl()

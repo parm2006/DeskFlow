@@ -52,6 +52,7 @@ class DeskFlowClient:
         self.is_active = False
         self.control_connected = False
         self.data_connected = False
+        self._disconnecting = False
         
         # Setup control network callbacks
         self.control_network.register_callback('layout_config', self.on_layout_config)
@@ -95,12 +96,32 @@ class DeskFlowClient:
 
     def on_disconnected(self, data):
         logger.info("Disconnected from Server.")
+        report_setup_failure = False
+        internal_disconnect = False
+        if hasattr(self, '_connect_lock'):
+            with self._connect_lock:
+                internal_disconnect = self._disconnecting
+                self.control_connected = False
+                self.data_connected = False
+                self.file_connected = False
+                if not internal_disconnect and not self._connect_callback_done:
+                    self.connect_error = "secure session disconnected during setup"
+                    report_setup_failure = True
         self.is_active = False
         self.clipboard.stop()
         self.clipboard_sender.stop()
-        self.file_network.close()
         self.paste_coordinator.reset()
         self.hotkey_monitor.stop()
+        if internal_disconnect:
+            return
+        if report_setup_failure:
+            error = ConnectionError(self.connect_error)
+            self.disconnect(preserve_failure=True, error=error)
+            self._report_connect(
+                False, "Secure session disconnected before all lanes were ready"
+            )
+        else:
+            self.disconnect()
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -113,7 +134,7 @@ class DeskFlowClient:
         self.file_connected = False
         self._connect_callback = callback
         self._connect_callback_done = False
-        self._connect_lock = threading.Lock()
+        self._connect_lock = threading.RLock()
         self._connect_deadline = None
         self._ready_started = False
         
@@ -142,7 +163,10 @@ class DeskFlowClient:
                 self.data_network.connect(host, port + 1, _data_callback)
             else:
                 self.connect_error = err
-                self.disconnect()
+                self.disconnect(
+                    preserve_failure=True,
+                    error=self.control_network.last_error or ConnectionError(err),
+                )
                 self._report_connect(False, f"Control Socket Error: {err}")
 
         def _data_callback(success, err):
@@ -151,7 +175,10 @@ class DeskFlowClient:
                 _check_both_connected()
             else:
                 self.connect_error = err
-                self.disconnect()
+                self.disconnect(
+                    preserve_failure=True,
+                    error=self.data_network.last_error or ConnectionError(err),
+                )
                 self._report_connect(False, f"Data Socket Error: {err}")
 
         self.control_network.connect(host, port, _control_callback)
@@ -177,25 +204,74 @@ class DeskFlowClient:
                     self.control_connected and self.data_connected
                     and self.file_connected
                 )
+                or not self.control_network.connected
+                or self.data_network is None
+                or not self.data_network.connected
+                or self.file_network.sock is None
             ):
                 return False
             self._ready_started = True
-        self.clipboard.start()
-        self.hotkey_monitor.start()
-        self.control_network.commit_peer_trust()
-        self._report_connect(True, None)
-        return True
+            try:
+                self.control_network.commit_peer_trust()
+                if not self._all_lanes_live():
+                    raise ConnectionError(
+                        "secure session disconnected while becoming ready"
+                    )
+                self.clipboard.start()
+                self.hotkey_monitor.start()
+                if not self._all_lanes_live():
+                    self.clipboard.stop()
+                    self.hotkey_monitor.stop()
+                    raise ConnectionError(
+                        "secure session disconnected while starting services"
+                    )
+                self._report_connect(True, None)
+                return True
+            except Exception as error:
+                self.connect_error = str(error)
+                self.clipboard.stop()
+                self.hotkey_monitor.stop()
+                self.disconnect(preserve_failure=True, error=error)
+                self._report_connect(False, str(error))
+                return False
+
+    def _all_lanes_live(self):
+        return (
+            self.control_connected and self.data_connected
+            and self.file_connected and self.control_network.connected
+            and self.data_network is not None
+            and self.data_network.connected
+            and self.file_network.sock is not None
+        )
 
     def _on_lane_binding_timeout(self):
-        self.connect_error = "secondary lanes did not bind before the deadline"
-        self.disconnect()
+        error = TimeoutError("secondary lanes did not bind before the deadline")
+        self.connect_error = str(error)
+        self.disconnect(preserve_failure=True, error=error)
         self._report_connect(False, "Connection timed out while binding secure lanes")
 
-    def disconnect(self):
-        self.control_network.disconnect()
-        if self.data_network is not None:
-            self.data_network.disconnect()
-        self.file_network.close()
+    def disconnect(self, preserve_failure=False, error=None):
+        if hasattr(self, '_connect_lock'):
+            with self._connect_lock:
+                if self._disconnecting:
+                    return False
+                self._disconnecting = True
+        elif self._disconnecting:
+            return False
+        else:
+            self._disconnecting = True
+        try:
+            self.control_network.disconnect(
+                preserve_failure=preserve_failure, error=error
+            )
+            if self.data_network is not None:
+                self.data_network.disconnect(
+                    preserve_failure=preserve_failure, error=error
+                )
+            self.file_network.close()
+            return True
+        finally:
+            self._disconnecting = False
 
     def on_file_lane_offer(self, data):
         def connect_file_lane():
@@ -204,7 +280,7 @@ class DeskFlowClient:
             except Exception as error:
                 logger.error(f"Secure file lane connection failed: {error}")
                 self.connect_error = str(error)
-                self.disconnect()
+                self.disconnect(preserve_failure=True, error=error)
                 self._report_connect(False, f"File Socket Error: {error}")
 
         threading.Thread(target=connect_file_lane, daemon=True).start()

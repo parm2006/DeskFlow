@@ -7,6 +7,7 @@ import socket
 import ssl
 import struct
 import threading
+from enum import Enum
 
 from app.crypto import load_identity
 from app.session import SessionAuthenticationError, SessionCoordinator
@@ -37,6 +38,16 @@ class PairingTimeout(ConnectionError):
 
 class PeerIdentityChanged(ConnectionError):
     pass
+
+
+class ConnectionPhase(str, Enum):
+    DISCONNECTED = "disconnected"
+    TLS_CANDIDATE = "tls_candidate"
+    AWAITING_APPROVAL = "awaiting_approval"
+    AUTHENTICATING = "authenticating"
+    BINDING_LANES = "binding_lanes"
+    CONNECTED = "connected"
+    FAILED = "failed"
 
 
 def _tls_client_context():
@@ -328,7 +339,16 @@ class NetworkServer(NetworkNode):
                 self._candidate_sockets.discard(secure)
             self.trigger_callbacks("connected", {"addr": address, "session_id": session_id})
             self._receive_loop(secure, generation)
-        except (ConnectionError, OSError, ssl.SSLError, NetworkProtocolError, SessionAuthenticationError):
+        except SessionAuthenticationError:
+            if secure is not None:
+                try:
+                    _write_message(secure, {"type": "auth_failure"})
+                except Exception:
+                    pass
+                self._close_socket(secure)
+            else:
+                self._close_socket(raw)
+        except (ConnectionError, OSError, ssl.SSLError, NetworkProtocolError):
             if secure is not None:
                 self._close_socket(secure)
             else:
@@ -389,6 +409,12 @@ class NetworkClient(NetworkNode):
         self.port = None
         self.session_info = None
         self._pending_trust = None
+        self.phase = ConnectionPhase.DISCONNECTED
+        self.last_error = None
+
+    def _set_phase(self, phase):
+        with self._state_lock:
+            self.phase = phase
 
     def connect(self, host, port, callback):
         def worker():
@@ -403,6 +429,8 @@ class NetworkClient(NetworkNode):
                     callback(success, error)
 
             try:
+                self.last_error = None
+                self._set_phase(ConnectionPhase.TLS_CANDIDATE)
                 self.host = host
                 self.port = int(port)
                 raw = socket.create_connection((host, port), timeout=self.connect_timeout)
@@ -419,6 +447,7 @@ class NetworkClient(NetworkNode):
                     if pinned is not None and pinned != fingerprint:
                         raise PeerIdentityChanged("server identity changed; re-pair is required")
                     if pinned is None:
+                        self._set_phase(ConnectionPhase.AWAITING_APPROVAL)
                         pending = PendingPeerTrust(self.trust_store, peer, fingerprint)
                         if self.fingerprint_approval is None:
                             raise PairingRequired("first connection requires pairing approval")
@@ -436,9 +465,12 @@ class NetworkClient(NetworkNode):
                         "token": self.lane_token,
                         "session_id": self.session_id,
                     }
+                self._set_phase(ConnectionPhase.AUTHENTICATING)
                 secure.settimeout(self.auth_timeout)
                 _write_message(secure, request)
                 response = _read_message(secure)
+                if response.get("type") == "auth_failure":
+                    raise SessionAuthenticationError("authentication failed")
                 if response.get("type") != "auth_success":
                     raise SessionAuthenticationError("authentication was not acknowledged")
                 if self.role == "control":
@@ -448,6 +480,9 @@ class NetworkClient(NetworkNode):
                     self.session_info = {key: response[key] for key in required}
                     if self._pending_trust is not None:
                         self._pending_trust.authenticated()
+                    self._set_phase(ConnectionPhase.BINDING_LANES)
+                else:
+                    self._set_phase(ConnectionPhase.CONNECTED)
                 secure.settimeout(None)
                 generation = self._attach_socket(secure)
                 self.trigger_callbacks("connected", {"host": host, "session_id": response.get("session_id")})
@@ -459,6 +494,9 @@ class NetworkClient(NetworkNode):
                 self.receive_thread.start()
                 report(True, None)
             except Exception as error:
+                self.last_error = error
+                self._pending_trust = None
+                self._set_phase(ConnectionPhase.FAILED)
                 if secure is not None:
                     self._close_socket(secure)
                 elif raw is not None:
@@ -483,11 +521,40 @@ class NetworkClient(NetworkNode):
         return result[0] if result else False
 
     def commit_peer_trust(self):
-        pending = self._pending_trust
-        if pending is None:
-            return False
-        pending.lanes_bound()
-        committed = pending.commit_if_ready()
-        if committed:
+        with self._state_lock:
+            if not (
+                self.role == "control" and self.authenticated
+                and self.connected and self.sock is not None
+            ):
+                return False
+            pending = self._pending_trust
+            if pending is None:
+                self.phase = ConnectionPhase.CONNECTED
+                return False
+            pending.lanes_bound()
+            committed = pending.commit_if_ready()
+            if committed:
+                self._pending_trust = None
+                self.phase = ConnectionPhase.CONNECTED
+            return committed
+
+    def disconnect(self, preserve_failure=False, error=None):
+        disconnected = super().disconnect()
+        with self._state_lock:
             self._pending_trust = None
-        return committed
+            if preserve_failure:
+                if error is not None:
+                    self.last_error = error
+                self.phase = ConnectionPhase.FAILED
+            else:
+                self.phase = ConnectionPhase.DISCONNECTED
+        return disconnected
+
+    def _disconnect_socket(self, conn, generation):
+        disconnected = super()._disconnect_socket(conn, generation)
+        if disconnected:
+            with self._state_lock:
+                self._pending_trust = None
+                if self.phase is not ConnectionPhase.FAILED:
+                    self.phase = ConnectionPhase.DISCONNECTED
+        return disconnected

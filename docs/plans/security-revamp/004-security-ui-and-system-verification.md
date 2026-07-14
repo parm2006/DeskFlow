@@ -6,6 +6,7 @@
 - **Risk**: HIGH
 - **Depends on**: 001, 002, 003
 - **Planned at**: `8b329d8`, 2026-07-13
+- **Automated checkpoint**: complete after `f995183`; two-PC matrix pending
 
 ## Current state and intent
 
@@ -24,4 +25,3 @@
 - Every security requirement has direct automated or recorded manual evidence.
 - Daemon/background files remain unchanged.
 - Full suite and compile check pass with a clean tracked worktree.
-

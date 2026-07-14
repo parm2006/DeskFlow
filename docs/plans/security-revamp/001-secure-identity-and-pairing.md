@@ -8,6 +8,7 @@
 - **Risk**: HIGH
 - **Depends on**: none
 - **Planned at**: `8b329d8`, 2026-07-13
+- **Completed at**: `f995183`, 2026-07-13
 
 ## Current state and intent
 
@@ -26,4 +27,3 @@
 - Legacy cwd identity migration is safe and one-time.
 - No failed or declined attempt changes trust.
 - Full tests and compile check pass.
-

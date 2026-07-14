@@ -1,12 +1,16 @@
 import socket
+import ssl
 import tempfile
 import threading
 import time
 import unittest
 
 from app.crypto import IdentityStore
-from app.network import NetworkClient, NetworkNode, NetworkServer, PairingTimeout
-from app.session import SessionCoordinator
+from app.network import (
+    ConnectionPhase, NetworkClient, NetworkNode, NetworkServer,
+    PairingTimeout, PeerIdentityChanged,
+)
+from app.session import SessionAuthenticationError, SessionCoordinator
 from app.trust import PeerTrustStore
 
 
@@ -107,17 +111,68 @@ class SecureControlConnectionTests(unittest.TestCase):
         peer = self.trust.peer_id("127.0.0.1", self.server.port)
         try:
             self.assertEqual(result, (True, None))
+            self.assertEqual(client.phase, ConnectionPhase.BINDING_LANES)
             self.assertIsNone(self.trust.load(peer))
             self.assertTrue(client.commit_peer_trust())
+            self.assertEqual(client.phase, ConnectionPhase.CONNECTED)
             self.assertEqual(self.trust.load(peer), client.peer_certificate_fingerprint())
         finally:
             client.disconnect()
+
+    def test_disconnect_before_lane_binding_discards_pending_trust(self):
+        client, result = self.connect()
+        peer = self.trust.peer_id("127.0.0.1", self.server.port)
+        self.assertEqual(result, (True, None))
+        client.disconnect()
+
+        self.assertFalse(client.commit_peer_trust())
+        self.assertEqual(client.phase, ConnectionPhase.DISCONNECTED)
+        self.assertIsNone(self.trust.load(peer))
+
+    def test_concurrent_disconnect_cannot_resurrect_connected_phase(self):
+        client, result = self.connect()
+        self.assertEqual(result, (True, None))
+        entered_commit = threading.Event()
+        release_commit = threading.Event()
+        original_commit = self.trust.commit
+
+        def blocking_commit(peer, fingerprint):
+            entered_commit.set()
+            release_commit.wait(1)
+            original_commit(peer, fingerprint)
+
+        self.trust.commit = blocking_commit
+        commit_result = []
+        commit_thread = threading.Thread(
+            target=lambda: commit_result.append(client.commit_peer_trust())
+        )
+        disconnect_thread = threading.Thread(target=client.disconnect)
+        commit_thread.start()
+        self.assertTrue(entered_commit.wait(1))
+        disconnect_thread.start()
+        release_commit.set()
+        commit_thread.join(1)
+        disconnect_thread.join(1)
+
+        self.assertEqual(commit_result, [True])
+        self.assertFalse(client.connected)
+        self.assertEqual(client.phase, ConnectionPhase.DISCONNECTED)
 
     def test_wrong_password_leaves_no_pin_and_server_accepts_a_later_client(self):
         bad, result = self.connect(password="wrong")
         peer = self.trust.peer_id("127.0.0.1", self.server.port)
         bad.disconnect()
         self.assertFalse(result[0])
+        self.assertEqual(bad.phase, ConnectionPhase.DISCONNECTED)
+        self.assertIsInstance(bad.last_error, SessionAuthenticationError)
+        self.assertIsNone(self.trust.load(peer))
+
+    def test_declined_pairing_retains_typed_failure_without_a_pin(self):
+        client, result = self.connect(approval=lambda fingerprint, peer: False)
+        peer = self.trust.peer_id("127.0.0.1", self.server.port)
+        self.assertFalse(result[0])
+        self.assertEqual(client.phase, ConnectionPhase.FAILED)
+        self.assertIsNotNone(client.last_error)
         self.assertIsNone(self.trust.load(peer))
 
         deadline = time.monotonic() + 2
@@ -139,6 +194,41 @@ class SecureControlConnectionTests(unittest.TestCase):
                 client.disconnect()
         finally:
             stalled.close()
+
+    def test_stalled_password_auth_does_not_block_a_valid_client(self):
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection(("127.0.0.1", self.server.port), timeout=1)
+        stalled = context.wrap_socket(raw, server_hostname="127.0.0.1")
+        try:
+            client, result = self.connect()
+            try:
+                self.assertEqual(result, (True, None))
+            finally:
+                client.disconnect()
+        finally:
+            stalled.close()
+
+    def test_changed_identity_requires_explicit_repair(self):
+        peer = self.trust.peer_id("127.0.0.1", self.server.port)
+        old_fingerprint = "0" * 64
+        self.trust.commit(peer, old_fingerprint)
+        client, result = self.connect()
+        self.assertFalse(result[0])
+        self.assertIsInstance(client.last_error, PeerIdentityChanged)
+        self.assertEqual(self.trust.load(peer), old_fingerprint)
+
+        self.assertTrue(self.trust.clear(peer))
+        repaired, repaired_result = self.connect()
+        try:
+            self.assertEqual(repaired_result, (True, None))
+            self.assertTrue(repaired.commit_peer_trust())
+            self.assertEqual(
+                self.trust.load(peer), repaired.peer_certificate_fingerprint()
+            )
+        finally:
+            repaired.disconnect()
 
 
 if __name__ == "__main__":
