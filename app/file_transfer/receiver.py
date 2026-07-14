@@ -3,10 +3,12 @@ import logging
 import queue
 import threading
 import time
+from collections import OrderedDict
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .compression import decode_chunk
 from .models import ItemType, Manifest
-from .staging import StagedFile
+from .staging import StagedFile, cleanup_staging_root
 from .validation import validate_manifest, validate_relative_path
 from .status import TransferPhase
 from .range_coverage import RangeCoverage
@@ -24,12 +26,15 @@ class TransferReceiver:
         timer_factory=threading.Timer, stream_close_grace=1.0,
     ):
         self.staging_root = Path(staging_root)
+        cleanup_staging_root(self.staging_root)
         self.controller = controller
         self.clock = clock
         self.timer_factory = timer_factory
         self.stream_close_grace = stream_close_grace
         self.lane = None
         self._jobs = {}
+        self._cancelled_jobs = OrderedDict()
+        self._cancelled_limit = 256
         self._progress_queue = queue.Queue()
         self._progress_worker = None
 
@@ -56,12 +61,11 @@ class TransferReceiver:
         lane.register_callback(
             "job_complete", lambda metadata, payload: self.complete_job(metadata["job_id"])
         )
-        lane.register_callback(
-            "job_cancelled", lambda metadata, payload: self.cancel_job(metadata["job_id"])
-        )
 
     def accept_manifest(self, wire_manifest):
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
+        if manifest.job_id in self._cancelled_jobs:
+            return None
         if manifest.job_id in self._jobs:
             raise ValueError("job ID is already active")
         self._jobs[manifest.job_id] = {
@@ -85,12 +89,15 @@ class TransferReceiver:
             "network_verified": False,
             "last_progress_bytes": -1,
             "last_progress_time": 0.0,
+            "staging_key": AESGCM.generate_key(bit_length=256),
         }
         self._update_paste(manifest.job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
         return manifest
 
     def accept_chunk(self, metadata, payload):
         job_id = metadata["job_id"]
+        if job_id in self._cancelled_jobs:
+            return False
         relative_path = validate_relative_path(metadata["relative_path"])
         job = self._jobs[job_id]
         item = job["items"][relative_path]
@@ -102,6 +109,8 @@ class TransferReceiver:
             metadata["original_size"],
         )
         with job["condition"]:
+            if job_id in self._cancelled_jobs or job["error"] is not None:
+                return False
             staged = job["staged"].get(relative_path)
             if staged is None:
                 staged = StagedFile(
@@ -110,29 +119,41 @@ class TransferReceiver:
                     relative_path,
                     item.size,
                     item.sha256,
+                    encryption_key=job["staging_key"],
                 )
                 job["staged"][relative_path] = staged
             staged.write(metadata["offset"], decoded)
             job["bytes_received"] += len(decoded)
             job["condition"].notify_all()
+        return True
 
     def complete_file(self, job_id, relative_path):
+        if job_id in self._cancelled_jobs:
+            return False
         normalized = validate_relative_path(relative_path)
         job = self._jobs[job_id]
         with job["condition"]:
+            if job_id in self._cancelled_jobs or job["error"] is not None:
+                return False
             completed = job["staged"].pop(normalized).finalize()
             job["completed"][normalized] = completed
             job["condition"].notify_all()
             return completed
 
     def complete_job(self, job_id):
+        if job_id in self._cancelled_jobs:
+            return False
         job = self._jobs[job_id]
-        expected_files = {
-            path for path, item in job["items"].items() if item.item_type is ItemType.FILE
-        }
-        if set(job["completed"]) != expected_files:
-            raise ValueError("job completed before every file was verified")
-        job["network_verified"] = True
+        with job["condition"]:
+            if job_id in self._cancelled_jobs or job["error"] is not None:
+                return False
+            expected_files = {
+                path for path, item in job["items"].items()
+                if item.item_type is ItemType.FILE
+            }
+            if set(job["completed"]) != expected_files:
+                raise ValueError("job completed before every file was verified")
+            job["network_verified"] = True
         covered = self._paste_covered(job)
         if covered == job["manifest"].total_size:
             self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
@@ -240,27 +261,40 @@ class TransferReceiver:
                     raise TransferAbortedError(job["error"])
                 completed = job["completed"].get(normalized)
                 if completed is not None:
-                    with completed.open("rb") as source:
-                        source.seek(offset)
-                        return source.read(min(count, item.size - offset))
+                    staged = completed
+                    break
                 staged = job["staged"].get(normalized)
                 if staged is not None and staged.received_size > offset:
-                    return staged.read_available(offset, count)
+                    break
                 job["condition"].wait()
+        # Authenticated decryption and disk I/O must not hold the receiver condition;
+        # incoming chunks and cancellation remain responsive during Explorer reads.
+        return staged.read_available(offset, min(count, item.size - offset))
 
     def cancel_job(self, job_id):
         job = self._jobs.get(job_id)
         if job is None:
+            self._remember_cancelled(job_id)
             return False
         with job["condition"]:
+            self._remember_cancelled(job_id)
             for staged in job["staged"].values():
                 staged.abort()
+            for completed in job["completed"].values():
+                completed.abort()
             job["staged"].clear()
+            job["completed"].clear()
             job["error"] = "transfer was cancelled"
             if self.controller is not None:
                 self.controller.cancel(job_id)
             job["condition"].notify_all()
         return True
+
+    def _remember_cancelled(self, job_id):
+        self._cancelled_jobs[job_id] = None
+        self._cancelled_jobs.move_to_end(job_id)
+        while len(self._cancelled_jobs) > self._cancelled_limit:
+            self._cancelled_jobs.popitem(last=False)
 
     def _update_paste(self, job_id, phase, bytes_done, speed):
         if self.controller is None:
@@ -316,7 +350,10 @@ class TransferReceiver:
             with job["condition"]:
                 for staged in job["staged"].values():
                     staged.abort()
+                for completed in job["completed"].values():
+                    completed.abort()
                 job["staged"].clear()
+                job["completed"].clear()
                 job["error"] = reason
                 job["condition"].notify_all()
 

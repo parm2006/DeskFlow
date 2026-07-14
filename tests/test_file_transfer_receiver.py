@@ -211,7 +211,7 @@ class TransferReceiverTests(unittest.TestCase):
             )
             completed = receiver.complete_file(manifest.job_id, item.relative_path)
 
-            self.assertEqual(completed.read_bytes(), content)
+            self.assertEqual(completed.read_available(0, len(content)), content)
 
     def test_rejects_chunks_for_unknown_job_or_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -318,7 +318,10 @@ class TransferReceiverTests(unittest.TestCase):
                 completed.append(receiver.complete_file(manifest.job_id, "same.txt"))
 
             self.assertNotEqual(completed[0], completed[1])
-            self.assertEqual([path.read_bytes() for path in completed], [content, content])
+            self.assertEqual(
+                [staged.read_available(0, len(content)) for staged in completed],
+                [content, content],
+            )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.sender import TransferSender
 from app.file_transfer.source import SourceFile
-from app.file_transfer.controller import TransferController
+from app.file_transfer.controller import TransferCancelled, TransferController
 from app.file_transfer.status import TransferPhase
 
 
@@ -41,6 +42,54 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_cancellation_during_verification_is_not_treated_as_success(self):
+        class WaitingLane:
+            def __init__(self):
+                self.callbacks = {}
+                self.waiting = threading.Event()
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                if metadata["type"] == "job_complete":
+                    self.waiting.set()
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "empty.bin"
+            source_path.write_bytes(b"")
+            source = SourceFile.snapshot(source_path)
+            item = FileItem(
+                "empty.bin", ItemType.FILE, source.size,
+                source.modified_ns, source.sha256,
+            )
+            manifest = Manifest.create([item])
+            lane = WaitingLane()
+            controller = TransferController()
+            errors = []
+            worker = threading.Thread(
+                target=lambda: self._capture_error(
+                    errors,
+                    lambda: TransferSender(lane, controller=controller).send_job(
+                        manifest, {"empty.bin": source}
+                    ),
+                )
+            )
+            worker.start()
+            self.assertTrue(lane.waiting.wait(1))
+            controller.cancel(manifest.job_id)
+            worker.join(1)
+
+            self.assertFalse(worker.is_alive())
+            self.assertIsInstance(errors[0], TransferCancelled)
+
+    @staticmethod
+    def _capture_error(errors, action):
+        try:
+            action()
+        except Exception as error:
+            errors.append(error)
+
     def test_sends_manifest_and_bounded_chunks_that_receiver_verifies(self):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as receive_directory:
             source_path = Path(source_directory) / "report.txt"
@@ -52,8 +101,13 @@ class TransferSenderTests(unittest.TestCase):
 
             TransferSender(LoopbackLane(receiver)).send_job(manifest, {"report.txt": source})
 
-            completed = Path(receive_directory) / "completed" / manifest.job_id / "report.txt"
-            self.assertEqual(completed.read_bytes(), source_path.read_bytes())
+            completed = list((Path(receive_directory) / "completed" / manifest.job_id).glob("*.cache"))
+            self.assertEqual(len(completed), 1)
+            self.assertEqual(
+                receiver.read_range(manifest.job_id, "report.txt", 0, source.size),
+                source_path.read_bytes(),
+            )
+            self.assertNotEqual(completed[0].read_bytes(), source_path.read_bytes())
 
     def test_waits_for_destination_owned_explorer_progress_after_network_verification(self):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as receive_directory:

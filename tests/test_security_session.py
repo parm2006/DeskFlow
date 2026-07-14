@@ -1,0 +1,70 @@
+import tempfile
+import unittest
+
+from app.session import SessionAuthenticationError, SessionCoordinator
+from app.trust import PeerTrustStore, PendingPeerTrust
+
+
+class SessionCoordinatorTests(unittest.TestCase):
+    def test_control_authentication_issues_purpose_bound_one_use_lane_tokens(self):
+        coordinator = SessionCoordinator("correct horse", clock=lambda: 10.0)
+
+        session = coordinator.authenticate_control("correct horse")
+
+        self.assertTrue(coordinator.consume_lane(session.data_token, "data", session.session_id))
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.consume_lane(session.data_token, "data", session.session_id)
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.consume_lane(session.file_token, "data", session.session_id)
+        fresh = coordinator.authenticate_control("correct horse")
+        self.assertTrue(coordinator.consume_lane(fresh.file_token, "file", fresh.session_id))
+
+    def test_wrong_password_and_expired_or_cross_session_tokens_are_rejected(self):
+        now = [10.0]
+        coordinator = SessionCoordinator("secret", clock=lambda: now[0], token_ttl=2.0)
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.authenticate_control("wrong")
+        session = coordinator.authenticate_control("secret")
+        now[0] = 13.0
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.consume_lane(session.data_token, "data", session.session_id)
+
+        fresh = coordinator.authenticate_control("secret")
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.consume_lane(fresh.data_token, "data", "another-session")
+
+
+class PendingPeerTrustTests(unittest.TestCase):
+    def test_trust_commits_only_after_approval_authentication_and_lane_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PeerTrustStore(directory)
+            peer = store.peer_id("server.local", 5000)
+            pending = PendingPeerTrust(store, peer, "ab" * 32)
+
+            pending.approve()
+            pending.authenticated()
+            self.assertFalse(pending.commit_if_ready())
+            self.assertIsNone(store.load(peer))
+
+            pending.lanes_bound()
+            self.assertTrue(pending.commit_if_ready())
+            self.assertEqual(store.load(peer), "ab" * 32)
+            self.assertFalse(pending.commit_if_ready())
+
+    def test_decline_or_failure_never_changes_saved_trust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PeerTrustStore(directory)
+            peer = store.peer_id("server.local", 5000)
+            store.commit(peer, "11" * 32)
+            pending = PendingPeerTrust(store, peer, "22" * 32)
+
+            pending.decline()
+            pending.authenticated()
+            pending.lanes_bound()
+
+            self.assertFalse(pending.commit_if_ready())
+            self.assertEqual(store.load(peer), "11" * 32)
+
+
+if __name__ == "__main__":
+    unittest.main()

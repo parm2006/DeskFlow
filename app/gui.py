@@ -2,9 +2,11 @@ import customtkinter as ctk
 import logging
 import json
 import os
+import threading
 from app.server import DeskFlowServer
 from app.client import DeskFlowClient
 from app.file_transfer.toast import TransferToast
+from app.crypto import certificate_fingerprint, pairing_code_from_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +17,9 @@ class DeskFlowGUI(ctk.CTk):
         super().__init__()
         
         self.title("DeskFlow")
-        self.geometry("310x560")
-        self.resizable(False, False)
+        self.geometry("420x650")
+        self.minsize(330, 560)
+        self.resizable(True, True)
         
         self.server = None
         self.client = None
@@ -29,6 +32,7 @@ class DeskFlowGUI(ctk.CTk):
         
         # UI setup
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         
         # Tabs for Mode Selection
         self.tabview = ctk.CTkTabview(self)
@@ -114,9 +118,37 @@ class DeskFlowGUI(ctk.CTk):
         self.client_connect_btn = ctk.CTkButton(self.tab_client, text="Connect", command=self.connect_client)
         self.client_connect_btn.pack(pady=10)
         self.client_disconnect_btn = ctk.CTkButton(self.tab_client, text="Disconnect", fg_color="red", hover_color="darkred", command=self.disconnect_client)
-        
-        self.status_label = ctk.CTkLabel(self, text="Status: Idle", text_color="gray")
-        self.status_label.grid(row=1, column=0, padx=20, pady=10)
+
+        self.repair_btn = ctk.CTkButton(
+            self.tab_client, text="Forget saved identity and re-pair",
+            command=self.clear_client_trust,
+        )
+        self.repair_btn.pack(pady=5)
+
+        self.pairing_frame = ctk.CTkFrame(self.tab_client)
+        self.pairing_title = ctk.CTkLabel(
+            self.pairing_frame, text="Compare this code with the server"
+        )
+        self.pairing_title.pack(padx=8, pady=(8, 2))
+        self.pairing_details = ctk.CTkTextbox(
+            self.pairing_frame, height=105, wrap="word"
+        )
+        self.pairing_details.pack(fill="x", expand=True, padx=8, pady=4)
+        self.pairing_actions = ctk.CTkFrame(self.pairing_frame, fg_color="transparent")
+        self.pairing_actions.pack(pady=(2, 8))
+        self.pairing_approve = ctk.CTkButton(
+            self.pairing_actions, text="Codes match", width=110
+        )
+        self.pairing_approve.pack(side="left", padx=4)
+        self.pairing_decline = ctk.CTkButton(
+            self.pairing_actions, text="Decline", width=90,
+            fg_color="red", hover_color="darkred",
+        )
+        self.pairing_decline.pack(side="left", padx=4)
+
+        self.status_text = ctk.CTkTextbox(self, height=92, wrap="word")
+        self.status_text.grid(row=1, column=0, padx=20, pady=(0, 14), sticky="nsew")
+        self._set_status("Status: Idle", "gray")
         
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -156,7 +188,7 @@ class DeskFlowGUI(ctk.CTk):
         password = self.server_password_entry.get()
         
         if not password:
-            self.status_label.configure(text="Status: Error - Password required", text_color="red")
+            self._set_status("Status: Error - Password required", "red")
             return
         if self.server:
             self.server.stop()
@@ -179,11 +211,20 @@ class DeskFlowGUI(ctk.CTk):
         self.server.set_screen_size(screen_width, screen_height)
         
         if self.server.start():
-            self.status_label.configure(text=f"Status: Server Listening on port {port}", text_color="green")
+            fingerprint = certificate_fingerprint(self.server.identity.cert_path)
+            code = pairing_code_from_fingerprint(fingerprint)
+            recovery = (
+                "\nA damaged identity was replaced; existing clients must re-pair."
+                if self.server.identity.recovered else ""
+            )
+            self._set_status(
+                f"Status: Server listening on port {port}\nPairing code: {code}{recovery}",
+                "orange" if self.server.identity.recovered else "green",
+            )
             self.server_start_btn.pack_forget()
             self.server_stop_btn.pack(pady=10)
         else:
-            self.status_label.configure(text="Status: Failed to start server", text_color="red")
+            self._set_status("Status: Failed to start server", "red")
 
     def connect_client(self):
         ip = self.client_ip_entry.get()
@@ -191,18 +232,22 @@ class DeskFlowGUI(ctk.CTk):
         password = self.client_password_entry.get()
         
         if not password:
-            self.status_label.configure(text="Status: Error - Password required", text_color="red")
+            self._set_status("Status: Error - Password required", "red")
             return
         
         if self.client:
             self.client.disconnect()
             
-        self.client = DeskFlowClient(password=password, on_transfer_status=self._on_transfer_status)
+        self.client = DeskFlowClient(
+            password=password,
+            on_transfer_status=self._on_transfer_status,
+            fingerprint_approval=self._approve_fingerprint,
+        )
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.client.set_screen_size(screen_width, screen_height)
         
-        self.status_label.configure(text=f"Status: Connecting to {ip}:{port}...", text_color="orange")
+        self._set_status(f"Status: Connecting to {ip}:{port}...", "orange")
         self.client_connect_btn.configure(state="disabled")
         
         def _on_connect_result(success, error_msg):
@@ -214,13 +259,13 @@ class DeskFlowGUI(ctk.CTk):
     def _handle_connect_result(self, success, error_msg, ip, port):
         self.client_connect_btn.configure(state="normal")
         if success:
-            self.status_label.configure(text=f"Status: Connected to {ip}:{port}", text_color="green")
+            self._set_status(f"Status: Connected to {ip}:{port}", "green")
             self.save_known_host(ip, port)
             self.client_connect_btn.pack_forget()
             self.client_disconnect_btn.pack(pady=10)
             self.client.control_network.register_callback('disconnected', self._on_client_disconnected_event)
         else:
-            self.status_label.configure(text=f"Status: Connection failed ({error_msg})", text_color="red")
+            self._set_status(f"Status: Connection failed\n{error_msg}", "red")
 
     def stop_server(self):
         if self.server:
@@ -228,7 +273,7 @@ class DeskFlowGUI(ctk.CTk):
             self.server = None
         self.server_stop_btn.pack_forget()
         self.server_start_btn.pack(pady=10)
-        self.status_label.configure(text="Status: Server stopped", text_color="gray")
+        self._set_status("Status: Server stopped", "gray")
 
     def disconnect_client(self):
         if self.client:
@@ -236,15 +281,67 @@ class DeskFlowGUI(ctk.CTk):
             self.client = None
         self.client_disconnect_btn.pack_forget()
         self.client_connect_btn.pack(pady=10)
-        self.status_label.configure(text="Status: Disconnected", text_color="gray")
+        self._set_status("Status: Disconnected", "gray")
 
     def _on_server_client_connected(self, data):
-        self.after(0, lambda: self.status_label.configure(text="Status: Client Connected!", text_color="green"))
+        self.after(0, lambda: self._set_status("Status: Client Connected!", "green"))
         
     def _on_server_client_disconnected(self, data):
         if self.server:
             port = self.server_port_entry.get()
-            self.after(0, lambda: self.status_label.configure(text=f"Status: Server Listening on port {port}", text_color="green"))
+            self.after(0, lambda: self._set_status(f"Status: Server listening on port {port}", "green"))
+
+    def _set_status(self, message, color="gray"):
+        self.status_text.configure(state="normal", text_color=color)
+        self.status_text.delete("1.0", "end")
+        self.status_text.insert("1.0", message)
+        self.status_text.configure(state="disabled")
+
+    def _approve_fingerprint(self, fingerprint, peer):
+        completed = threading.Event()
+        decision = {"approved": False}
+        self.after(
+            0,
+            lambda: self._show_pairing_prompt(
+                fingerprint, peer, completed, decision
+            ),
+        )
+        completed.wait(115)
+        self.after(0, self.pairing_frame.pack_forget)
+        return decision["approved"]
+
+    def _show_pairing_prompt(self, fingerprint, peer, completed, decision):
+        code = pairing_code_from_fingerprint(fingerprint)
+        self.pairing_details.configure(state="normal")
+        self.pairing_details.delete("1.0", "end")
+        self.pairing_details.insert(
+            "1.0",
+            f"Code: {code}\nServer: {peer.canonical}\nFingerprint: {fingerprint}",
+        )
+        self.pairing_details.configure(state="disabled")
+
+        def finish(approved):
+            decision["approved"] = approved
+            completed.set()
+            self.pairing_frame.pack_forget()
+
+        self.pairing_approve.configure(command=lambda: finish(True))
+        self.pairing_decline.configure(command=lambda: finish(False))
+        self.pairing_frame.pack(fill="x", padx=8, pady=8)
+
+    def clear_client_trust(self):
+        try:
+            host = self.client_ip_entry.get()
+            port = int(self.client_port_entry.get())
+            store = self.client.trust_store if self.client else None
+            if store is None:
+                from app.trust import PeerTrustStore
+                store = PeerTrustStore()
+            cleared = store.clear(store.peer_id(host, port))
+            message = "Saved identity cleared. Connect again to re-pair." if cleared else "No saved identity existed for this server."
+            self._set_status(message, "orange")
+        except Exception as error:
+            self._set_status(f"Could not clear saved identity\n{error}", "red")
 
     def _on_client_disconnected_event(self, data):
         self.after(0, self.disconnect_client)

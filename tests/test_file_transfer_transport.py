@@ -4,13 +4,14 @@ import hashlib
 import ssl
 import threading
 
-from app.crypto import CERT_FILE, KEY_FILE, ensure_certificates
+from app.crypto import IdentityStore
 from pathlib import Path
 import tempfile
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.sender import TransferSender
 from app.file_transfer.source import SourceFile
+from app.session import SessionCoordinator
 
 from app.file_transfer.protocol import FrameError, encode_frame
 from app.file_transfer.protocol import AuthenticationError, SessionAuthenticator
@@ -46,6 +47,38 @@ class FragmentedSocket:
 
 
 class TransportTests(unittest.TestCase):
+    def test_closing_server_revokes_pending_control_session_file_token(self):
+        coordinator = SessionCoordinator("secret")
+        offer = coordinator.authenticate_control("secret")
+        server = FileLaneServer(
+            identity=self.identity, host="127.0.0.1", port=0,
+            coordinator=coordinator,
+        )
+        server.offer_session(offer.file_token, offer.session_id)
+        self.assertTrue(server.start())
+        server.close()
+        with self.identity.cert_path.open(encoding="ascii") as certificate_file:
+            fingerprint = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(certificate_file.read())
+            ).hexdigest()
+        try:
+            with self.assertRaises(Exception):
+                FileLaneClient().connect(
+                    "127.0.0.1", server.port, fingerprint,
+                    offer.file_token, session_id=offer.session_id,
+                )
+        finally:
+            server.stop()
+
+    def setUp(self):
+        self.identity_directory = tempfile.TemporaryDirectory()
+        self.identity = IdentityStore(
+            self.identity_directory.name, legacy_root=False
+        ).load_or_create()
+
+    def tearDown(self):
+        self.identity_directory.cleanup()
+
     def test_reads_fragmented_frame_without_unbounded_allocation(self):
         sock = FragmentedSocket(encode_frame({"type": "status"}, b"ok"))
 
@@ -74,6 +107,16 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(AuthenticationError):
             authenticate_server_connection(replay, authenticator)
 
+    def test_file_lane_token_is_bound_to_the_control_session(self):
+        authenticator = SessionAuthenticator("one-use-token")
+        wrong = FragmentedSocket(encode_frame({
+            "type": "authenticate",
+            "token": "one-use-token",
+            "session_id": "wrong",
+        }))
+        with self.assertRaises(AuthenticationError):
+            authenticate_server_connection(wrong, authenticator, "expected")
+
     def test_client_requires_file_lane_to_match_control_certificate(self):
         reply = encode_frame({"type": "authenticated"})
         expected = hashlib.sha256(b"file peer certificate").hexdigest()
@@ -85,10 +128,9 @@ class TransportTests(unittest.TestCase):
             authenticate_client_connection(wrong, "0" * 64, "one-use-token")
 
     def test_tls_file_lane_authenticates_and_delivers_bounded_event(self):
-        ensure_certificates()
         received = []
         delivered = threading.Event()
-        server = FileLaneServer(CERT_FILE, KEY_FILE, host="127.0.0.1", port=0)
+        server = FileLaneServer(identity=self.identity, host="127.0.0.1", port=0)
         server.register_callback(
             "status",
             lambda metadata, payload: (received.append((metadata, payload)), delivered.set()),
@@ -96,7 +138,7 @@ class TransportTests(unittest.TestCase):
         token = server.issue_session()
         self.assertTrue(server.start())
         client = FileLaneClient()
-        with open(CERT_FILE, encoding="ascii") as certificate_file:
+        with self.identity.cert_path.open(encoding="ascii") as certificate_file:
             certificate_der = ssl.PEM_cert_to_DER_cert(certificate_file.read())
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
         try:
@@ -109,7 +151,6 @@ class TransportTests(unittest.TestCase):
             server.stop()
 
     def test_tls_lane_transfers_file_with_end_to_end_hash_verification(self):
-        ensure_certificates()
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as receive_directory:
             source_path = Path(source_directory) / "source.txt"
             source_path.write_bytes(b"verified over TLS")
@@ -117,33 +158,40 @@ class TransportTests(unittest.TestCase):
             manifest = Manifest.create([
                 FileItem("received.txt", ItemType.FILE, source.size, source.modified_ns, source.sha256)
             ])
-            server = FileLaneServer(CERT_FILE, KEY_FILE, host="127.0.0.1", port=0)
-            TransferReceiver(Path(receive_directory)).attach(server)
+            server = FileLaneServer(identity=self.identity, host="127.0.0.1", port=0)
+            receiver = TransferReceiver(Path(receive_directory))
+            receiver.attach(server)
             token = server.issue_session()
             self.assertTrue(server.start())
             client = FileLaneClient()
-            with open(CERT_FILE, encoding="ascii") as certificate_file:
+            with self.identity.cert_path.open(encoding="ascii") as certificate_file:
                 fingerprint = hashlib.sha256(
                     ssl.PEM_cert_to_DER_cert(certificate_file.read())
                 ).hexdigest()
             try:
                 client.connect("127.0.0.1", server.port, fingerprint, token)
                 TransferSender(client).send_job(manifest, {"received.txt": source})
-                completed = Path(receive_directory) / "completed" / manifest.job_id / "received.txt"
+                completed_dir = Path(receive_directory) / "completed" / manifest.job_id
                 for _ in range(100):
-                    if completed.exists():
+                    completed = list(completed_dir.glob("*.cache"))
+                    if completed:
                         break
                     threading.Event().wait(0.01)
-                self.assertEqual(completed.read_bytes(), b"verified over TLS")
+                self.assertEqual(
+                    receiver.read_range(
+                        manifest.job_id, "received.txt", 0, source.size
+                    ),
+                    b"verified over TLS",
+                )
+                self.assertNotEqual(completed[0].read_bytes(), b"verified over TLS")
             finally:
                 client.close()
                 server.stop()
 
     def test_file_lane_accepts_fresh_session_after_client_disconnect(self):
-        ensure_certificates()
-        server = FileLaneServer(CERT_FILE, KEY_FILE, host="127.0.0.1", port=0)
+        server = FileLaneServer(identity=self.identity, host="127.0.0.1", port=0)
         self.assertTrue(server.start())
-        with open(CERT_FILE, encoding="ascii") as certificate_file:
+        with self.identity.cert_path.open(encoding="ascii") as certificate_file:
             fingerprint = hashlib.sha256(
                 ssl.PEM_cert_to_DER_cert(certificate_file.read())
             ).hexdigest()

@@ -12,6 +12,7 @@ class TransferController:
         self._lock = threading.Lock()
         self._statuses = {}
         self._cancelled = set()
+        self._cancel_events = {}
         self._subscribers = []
 
     def subscribe(self, callback):
@@ -54,6 +55,7 @@ class TransferController:
 
     def cancel(self, job_id):
         with self._lock:
+            self._cancel_events.setdefault(job_id, threading.Event()).set()
             previous = self._statuses.get(job_id)
             if previous is None or previous.is_terminal or job_id in self._cancelled:
                 return False
@@ -92,6 +94,10 @@ class TransferController:
             cancelled = job_id in self._cancelled
         if cancelled:
             raise TransferCancelled(job_id)
+
+    def cancellation_event(self, job_id):
+        with self._lock:
+            return self._cancel_events.setdefault(job_id, threading.Event())
 
     def status(self, job_id):
         with self._lock:

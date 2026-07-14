@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import threading
 import json
 import struct
 
@@ -23,14 +24,16 @@ class SessionAuthenticator:
             raise ValueError("session token is too short")
         self._token_digest = hashlib.sha256(token.encode("utf-8")).digest()
         self._consumed = False
+        self._lock = threading.Lock()
 
     def authenticate(self, candidate):
-        if self._consumed or not isinstance(candidate, str):
-            raise AuthenticationError("session token is invalid or already used")
-        candidate_digest = hashlib.sha256(candidate.encode("utf-8")).digest()
-        if not hmac.compare_digest(candidate_digest, self._token_digest):
-            raise AuthenticationError("session token is invalid or already used")
-        self._consumed = True
+        with self._lock:
+            if self._consumed or not isinstance(candidate, str):
+                raise AuthenticationError("session token is invalid or already used")
+            candidate_digest = hashlib.sha256(candidate.encode("utf-8")).digest()
+            if not hmac.compare_digest(candidate_digest, self._token_digest):
+                raise AuthenticationError("session token is invalid or already used")
+            self._consumed = True
 
 
 def verify_certificate_fingerprint(certificate_der, expected_fingerprint):

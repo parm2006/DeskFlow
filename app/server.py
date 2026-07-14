@@ -1,8 +1,10 @@
 import logging
 import os
+import threading
 from pathlib import Path
 from app.network import NetworkServer
-from app.crypto import CERT_FILE, KEY_FILE
+from app.crypto import load_identity
+from app.session import SessionCoordinator
 from app.file_transfer.transport import FileLaneServer
 from app.file_transfer.paste_coordinator import PasteCoordinator
 from app.file_transfer.hotkey import WindowsPasteHotkeyMonitor
@@ -12,6 +14,7 @@ from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.selection import snapshot_selection
 from app.file_transfer.sender import TransferSender
 from app.file_transfer.controller import TransferController
+from app.file_transfer.cancellation import TransferCancellation
 from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
 from app.latest_wins_sender import LatestWinsSender
@@ -24,24 +27,39 @@ class DeskFlowServer:
         self.on_capture_start = on_capture_start
         self.on_capture_stop = on_capture_stop
         
-        self.control_network = NetworkServer(password, '0.0.0.0', port)
-        self.data_network = NetworkServer(password, '0.0.0.0', port + 1)
-        self.file_network = FileLaneServer(CERT_FILE, KEY_FILE, '0.0.0.0', port + 2)
+        self.identity = load_identity()
+        self.session_coordinator = SessionCoordinator(password)
+        self.control_network = NetworkServer(
+            password, '0.0.0.0', port, role='control',
+            coordinator=self.session_coordinator, identity=self.identity,
+        )
+        self.data_network = NetworkServer(
+            password, '0.0.0.0', port + 1, role='data',
+            coordinator=self.session_coordinator, identity=self.identity,
+        )
+        self.file_network = FileLaneServer(
+            host='0.0.0.0', port=port + 2, identity=self.identity,
+            coordinator=self.session_coordinator,
+        )
         self.transfer_controller = TransferController()
         if on_transfer_status:
             self.transfer_controller.subscribe(on_transfer_status)
         self.file_receiver = TransferReceiver(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'DeskFlow' / 'transfers' / 'server', controller=self.transfer_controller)
         self.file_receiver.attach(self.file_network)
-        self.file_network.register_callback('cancel_request', self._on_cancel_request)
-        self.file_network.register_callback('cancel_ack', self._on_cancel_ack)
+        self.transfer_cancellation = TransferCancellation(
+            self.file_network, self.transfer_controller, self.file_receiver
+        )
         self.file_publisher = VirtualPastePublisher()
         self.input_handler = InputHandler()
         
         self.control_connected = False
         self.data_connected = False
+        self._client_ready = False
+        self._disconnecting = False
+        self._client_state_lock = threading.RLock()
         
         # Setup control network callbacks
-        self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control'))
+        self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control', d))
         self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
         self.control_network.register_callback('switch_back', self.on_switch_back)
         self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
@@ -51,9 +69,12 @@ class DeskFlowServer:
         self.control_network.register_callback('file_manifest_ack', self.on_file_manifest_ack)
         
         # Setup data network callbacks
-        self.data_network.register_callback('connected', lambda d: self._on_socket_connected('data'))
+        self.data_network.register_callback('connected', lambda d: self._on_socket_connected('data', d))
         self.data_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('data'))
         self.data_network.register_callback('clipboard_sync', self.on_remote_copy)
+        self.file_network.register_callback(
+            'disconnected', lambda metadata, payload: self._on_socket_disconnected('file')
+        )
         
         # Setup input callbacks
         self.input_handler.register_callback('edge_hit', self.on_edge_hit)
@@ -82,21 +103,7 @@ class DeskFlowServer:
         self.pressed_keys = set()
 
     def cancel_transfer(self, job_id):
-        cancelled = self.transfer_controller.cancel(job_id)
-        if cancelled:
-            self.file_receiver.cancel_job(job_id)
-            self.file_network.send({'type': 'cancel_request', 'job_id': job_id})
-        return cancelled
-
-    def _on_cancel_request(self, metadata, payload):
-        job_id = metadata.get('job_id')
-        self.transfer_controller.cancel(job_id)
-        self.file_receiver.cancel_job(job_id)
-        self.transfer_controller.confirm_cancelled(job_id)
-        self.file_network.send({'type': 'cancel_ack', 'job_id': job_id})
-
-    def _on_cancel_ack(self, metadata, payload):
-        self.transfer_controller.confirm_cancelled(metadata.get('job_id'))
+        return self.transfer_cancellation.request(job_id)
 
     def set_screen_size(self, w, h):
         self.input_handler.set_screen_size(w, h)
@@ -119,25 +126,49 @@ class DeskFlowServer:
         self.clipboard_sender.stop()
         self.hotkey_monitor.stop()
 
-    def _on_socket_connected(self, sock_type):
-        if sock_type == 'control':
-            self.control_connected = True
-        elif sock_type == 'data':
-            self.data_connected = True
-            
-        if self.control_connected and self.data_connected:
+    def _on_socket_connected(self, sock_type, data=None):
+        with self._client_state_lock:
+            if sock_type == 'control':
+                self.control_connected = True
+            elif sock_type == 'data':
+                self.data_connected = True
+            if not (
+                self.control_connected and self.data_connected
+                and not self._client_ready
+            ):
+                return
+            if self.control_network.session_id != self.data_network.session_id:
+                mismatched = True
+            else:
+                mismatched = False
+                self._client_ready = True
+        if mismatched:
+            logger.warning("Rejecting lanes from different sessions")
+            self.data_network.disconnect()
+        else:
             self.on_client_connected()
 
     def _on_socket_disconnected(self, sock_type):
-        if sock_type == 'control':
-            self.control_connected = False
-        elif sock_type == 'data':
-            self.data_connected = False
-            
-        # If either disconnects, tear down both
-        self.control_network.disconnect()
-        self.data_network.disconnect()
-        self.on_client_disconnected()
+        with self._client_state_lock:
+            if sock_type == 'control':
+                self.control_connected = False
+            elif sock_type == 'data':
+                self.data_connected = False
+            if self._disconnecting:
+                return
+            self._disconnecting = True
+            was_ready = self._client_ready
+            self._client_ready = False
+        try:
+            self.session_coordinator.close()
+            self.file_network.revoke_session()
+            self.control_network.disconnect()
+            self.data_network.disconnect()
+            if was_ready:
+                self.on_client_disconnected()
+        finally:
+            with self._client_state_lock:
+                self._disconnecting = False
 
     def on_client_connected(self):
         logger.info(f"Client connected on both ports, starting edge detection for layout: {self.layout_position}")
@@ -155,11 +186,14 @@ class DeskFlowServer:
         self._offer_file_lane()
 
     def _offer_file_lane(self):
-        token = self.file_network.issue_session()
+        offer = self.control_network.session_offer
+        if offer is None or offer.session_id != self.data_network.session_id:
+            raise RuntimeError("file lane cannot be offered before session binding")
+        self.file_network.offer_session(offer.file_token, offer.session_id)
         self.control_network.send_message({
             'type': 'file_lane_offer',
             'port': self.file_network.port,
-            'token': token,
+            'session_id': offer.session_id,
         })
 
     def on_client_disconnected(self):

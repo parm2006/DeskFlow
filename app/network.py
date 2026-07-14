@@ -1,241 +1,493 @@
-import socket
-import threading
-import json
-import struct
-import logging
-import ssl
-import time
-import hashlib
-from app.crypto import ensure_certificates, CERT_FILE, KEY_FILE
+"""Deadline-bound TLS control and clipboard lanes."""
 
-logging.basicConfig(level=logging.INFO)
+import hashlib
+import json
+import logging
+import socket
+import ssl
+import struct
+import threading
+
+from app.crypto import load_identity
+from app.session import SessionAuthenticationError, SessionCoordinator
+from app.trust import PeerTrustStore, PendingPeerTrust
+
+
 logger = logging.getLogger(__name__)
+_HEADER = struct.Struct(">I")
+MAX_MESSAGE_SIZE = 64 * 1024 * 1024
+MAX_AUTH_MESSAGE_SIZE = 4096
+
+
+class NetworkProtocolError(ValueError):
+    pass
+
+
+class PairingRequired(ConnectionError):
+    pass
+
+
+class PairingDeclined(ConnectionError):
+    pass
+
+
+class PairingTimeout(ConnectionError):
+    pass
+
+
+class PeerIdentityChanged(ConnectionError):
+    pass
+
+
+def _tls_client_context():
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def _read_exact(conn, size):
+    data = bytearray()
+    while len(data) < size:
+        packet = conn.recv(size - len(data))
+        if not packet:
+            raise ConnectionError("connection closed")
+        data.extend(packet)
+    return bytes(data)
+
+
+def _read_message(conn, max_size=MAX_MESSAGE_SIZE):
+    size = _HEADER.unpack(_read_exact(conn, _HEADER.size))[0]
+    if size > max_size:
+        raise NetworkProtocolError("message exceeds the size limit")
+    try:
+        value = json.loads(_read_exact(conn, size).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise NetworkProtocolError("message contains invalid JSON") from error
+    if not isinstance(value, dict):
+        raise NetworkProtocolError("message must be a JSON object")
+    return value
+
+
+def _write_message(conn, value):
+    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    if len(payload) > MAX_MESSAGE_SIZE:
+        raise NetworkProtocolError("message exceeds the size limit")
+    conn.sendall(_HEADER.pack(len(payload)) + payload)
+
 
 class NetworkNode:
     def __init__(self):
         self.sock = None
         self.connected = False
         self.authenticated = False
-        self.callbacks = {} # event_type -> list of callback functions
+        self.callbacks = {}
         self.receive_thread = None
         self._send_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._generation = 0
 
     def register_callback(self, event_type, callback):
-        if event_type not in self.callbacks:
-            self.callbacks[event_type] = []
-        self.callbacks[event_type].append(callback)
+        self.callbacks.setdefault(event_type, []).append(callback)
 
     def peer_certificate_fingerprint(self):
-        if self.sock is None or not hasattr(self.sock, "getpeercert"):
+        with self._state_lock:
+            sock = self.sock
+        if sock is None or not hasattr(sock, "getpeercert"):
             raise RuntimeError("there is no live TLS peer certificate")
-        certificate = self.sock.getpeercert(binary_form=True)
+        certificate = sock.getpeercert(binary_form=True)
         if not certificate:
             raise RuntimeError("there is no live TLS peer certificate")
         return hashlib.sha256(certificate).hexdigest()
 
     def trigger_callbacks(self, event_type, data):
-        for cb in self.callbacks.get(event_type, []):
+        for callback in tuple(self.callbacks.get(event_type, ())):
             try:
-                cb(data)
-            except Exception as e:
-                logger.error(f"Callback error: {e}")
+                callback(data)
+            except Exception:
+                logger.exception("Network callback failed for event %s", event_type)
 
-    def send_message(self, msg_dict):
-        if not self.connected or not self.sock:
+    def _attach_socket(self, conn):
+        with self._state_lock:
+            previous = self.sock
+            self._generation += 1
+            generation = self._generation
+            self.sock = conn
+            self.connected = True
+            self.authenticated = True
+        if previous is not None and previous is not conn:
+            self._close_socket(previous)
+        return generation
+
+    def _is_current(self, conn, generation):
+        with self._state_lock:
+            return self.sock is conn and self._generation == generation and self.connected
+
+    def send_message(self, message):
+        with self._state_lock:
+            conn = self.sock
+            generation = self._generation
+            connected = self.connected
+        if not connected or conn is None:
             return False
         try:
-            payload = json.dumps(msg_dict).encode('utf-8')
-            # 4-byte length prefix (big-endian)
-            header = struct.pack('>I', len(payload))
             with self._send_lock:
-                if not self.connected or not self.sock:
+                if not self._is_current(conn, generation):
                     return False
-                self.sock.sendall(header + payload)
+                _write_message(conn, message)
             return True
-        except Exception as e:
-            logger.error(f"Send error: {e}")
-            self.disconnect()
+        except Exception:
+            logger.exception("Network send failed")
+            self._disconnect_socket(conn, generation)
             return False
 
-    def _receive_loop(self, conn):
+    def _receive_loop(self, conn, generation):
         try:
-            while self.connected:
-                # Read 4-byte header
-                raw_msglen = self._recvall(conn, 4)
-                if not raw_msglen:
-                    break
-                msglen = struct.unpack('>I', raw_msglen)[0]
-                
-                # Read payload
-                data = self._recvall(conn, msglen)
-                if not data:
-                    break
-                
-                msg_dict = json.loads(data.decode('utf-8'))
-                if not isinstance(msg_dict, dict):
-                    logger.error("Received payload is not a JSON object/dictionary")
-                    break
-                event_type = msg_dict.get('type')
-                
-                if not self.authenticated:
-                    if getattr(self, 'is_server', False):
-                        if event_type == 'auth' and msg_dict.get('password') == self.password:
-                            self.authenticated = True
-                            self.send_message({'type': 'auth_success'})
-                            self.trigger_callbacks('connected', {'addr': getattr(self, 'client_addr', None)})
-                            continue
-                        else:
-                            logger.error("Authentication failed")
-                            break
-                    else:
-                        if event_type == 'auth_success':
-                            self.authenticated = True
-                            self.trigger_callbacks('connected', {'host': getattr(self, 'host', None)})
-                            continue
-                        
-                if not self.authenticated:
-                    continue
-                    
-                if event_type:
-                    self.trigger_callbacks(event_type, msg_dict)
+            while self._is_current(conn, generation):
+                message = _read_message(conn)
+                event_type = message.get("type")
+                if isinstance(event_type, str) and event_type:
+                    self.trigger_callbacks(event_type, message)
                 else:
-                    logger.warning("Received message without type")
-        except Exception as e:
-            logger.error(f"Receive loop error: {e}")
+                    raise NetworkProtocolError("message type is missing")
+        except (ConnectionError, OSError, ssl.SSLError, NetworkProtocolError):
+            pass
         finally:
-            self.disconnect()
+            self._disconnect_socket(conn, generation)
 
-    def _recvall(self, conn, n):
-        data = bytearray()
-        while len(data) < n:
-            packet = conn.recv(n - len(data))
-            if not packet:
-                return None
-            data.extend(packet)
-        return data
+    def _disconnect_socket(self, conn, generation):
+        with self._state_lock:
+            if self.sock is not conn or self._generation != generation:
+                self._close_socket(conn)
+                return False
+            was_connected = self.connected
+            self.sock = None
+            self.connected = False
+            self.authenticated = False
+        self._close_socket(conn)
+        if was_connected:
+            self.trigger_callbacks("disconnected", {})
+        return True
 
     def disconnect(self):
-        was_connected = self.connected
-        self.connected = False
-        if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
-            self.sock = None
-        if was_connected:
-            self.trigger_callbacks('disconnected', {})
+        with self._state_lock:
+            conn = self.sock
+            generation = self._generation
+        if conn is None:
+            return False
+        return self._disconnect_socket(conn, generation)
+
+    @staticmethod
+    def _close_socket(conn):
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except (OSError, AttributeError):
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+
 
 class NetworkServer(NetworkNode):
-    def __init__(self, password, host='0.0.0.0', port=5000):
+    def __init__(
+        self,
+        password,
+        host="0.0.0.0",
+        port=5000,
+        *,
+        role="control",
+        coordinator=None,
+        identity=None,
+        handshake_timeout=3.0,
+        auth_timeout=120.0,
+    ):
         super().__init__()
+        if role not in {"control", "data"}:
+            raise ValueError("network server role must be control or data")
         self.is_server = True
         self.password = password
         self.host = host
         self.port = port
-        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.role = role
+        self.coordinator = coordinator or SessionCoordinator(password)
+        self.identity = identity or load_identity()
+        self.handshake_timeout = float(handshake_timeout)
+        self.auth_timeout = float(auth_timeout)
+        self.server_sock = None
         self.accept_thread = None
-        
-        ensure_certificates()
+        self._running = False
+        self._server_generation = 0
+        self._candidate_slots = threading.BoundedSemaphore(16)
+        self._candidate_lock = threading.Lock()
+        self._candidate_sockets = set()
+        self.client_addr = None
+        self.session_id = None
+        self.session_offer = None
+        self._admission_lock = threading.Lock()
         self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self.ssl_context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.ssl_context.load_cert_chain(
+            certfile=self.identity.cert_path,
+            keyfile=self.identity.key_path,
+            password=self.identity.password,
+        )
 
     def start(self):
         try:
-            self.server_sock.bind((self.host, self.port))
-            self.server_sock.listen(1)
-            logger.info(f"Server listening on {self.host}:{self.port}")
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.bind((self.host, self.port))
+            server_sock.listen(8)
+            server_sock.settimeout(0.2)
+            self.server_sock = server_sock
+            self.port = server_sock.getsockname()[1]
+            self._running = True
+            self._server_generation += 1
             self.accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
             self.accept_thread.start()
+            logger.info("%s server listening on %s:%s", self.role, self.host, self.port)
             return True
-        except Exception as e:
-            logger.error(f"Failed to start server: {e}")
+        except Exception:
+            logger.exception("Failed to start %s server", self.role)
+            self.stop()
             return False
 
     def _accept_loop(self):
-        try:
-            while True:
-                conn, addr = self.server_sock.accept()
-                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                logger.info(f"Client attempting connection from {addr}")
-                
-                # Wrap with SSL
-                try:
-                    secure_conn = self.ssl_context.wrap_socket(conn, server_side=True)
-                except Exception as e:
-                    logger.error(f"SSL Handshake failed: {e}")
-                    conn.close()
-                    continue
+        while self._running:
+            try:
+                raw, address = self.server_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if not self._candidate_slots.acquire(blocking=False):
+                self._close_socket(raw)
+                continue
+            with self._candidate_lock:
+                self._candidate_sockets.add(raw)
+            threading.Thread(
+                target=self._candidate_worker,
+                args=(raw, address, self._server_generation),
+                daemon=True,
+            ).start()
 
-                if self.connected:
-                    logger.info("Already connected, dropping new connection")
-                    secure_conn.close()
-                    continue
-                
-                self.sock = secure_conn
-                self.client_addr = addr
-                self.connected = True
-                self.authenticated = False
-                
-                self.receive_thread = threading.Thread(target=self._receive_loop, args=(secure_conn,), daemon=True)
-                self.receive_thread.start()
-        except Exception as e:
-            logger.error(f"Accept loop error: {e}")
+    def _candidate_worker(self, raw, address, server_generation):
+        try:
+            self._handle_candidate(raw, address, server_generation)
+        finally:
+            with self._candidate_lock:
+                self._candidate_sockets.discard(raw)
+            self._candidate_slots.release()
+
+    def _handle_candidate(self, raw, address, server_generation=None):
+        secure = None
+        try:
+            raw.settimeout(self.handshake_timeout)
+            secure = self.ssl_context.wrap_socket(raw, server_side=True)
+            with self._candidate_lock:
+                self._candidate_sockets.discard(raw)
+                self._candidate_sockets.add(secure)
+            secure.settimeout(self.auth_timeout)
+            request = _read_message(secure, MAX_AUTH_MESSAGE_SIZE)
+            with self._admission_lock:
+                if (
+                    not self._running
+                    or server_generation != self._server_generation
+                ):
+                    raise ConnectionError("server stopped during authentication")
+                with self._state_lock:
+                    if self.connected:
+                        raise ConnectionError("a peer is already connected")
+                if self.role == "control":
+                    if request.get("type") != "auth":
+                        raise SessionAuthenticationError("control authentication is required")
+                    offer = self.coordinator.authenticate_control(request.get("password"))
+                    response = {
+                        "type": "auth_success",
+                        "session_id": offer.session_id,
+                        "data_token": offer.data_token,
+                        "file_token": offer.file_token,
+                    }
+                    session_id = offer.session_id
+                    self.session_offer = offer
+                else:
+                    if request.get("type") != "lane_auth":
+                        raise SessionAuthenticationError("lane authentication is required")
+                    session_id = request.get("session_id")
+                    self.coordinator.consume_lane(request.get("token"), "data", session_id)
+                    response = {"type": "auth_success", "session_id": session_id}
+                _write_message(secure, response)
+                secure.settimeout(None)
+                generation = self._attach_socket(secure)
+                self.client_addr = address
+                self.session_id = session_id
+            with self._candidate_lock:
+                self._candidate_sockets.discard(secure)
+            self.trigger_callbacks("connected", {"addr": address, "session_id": session_id})
+            self._receive_loop(secure, generation)
+        except (ConnectionError, OSError, ssl.SSLError, NetworkProtocolError, SessionAuthenticationError):
+            if secure is not None:
+                self._close_socket(secure)
+            else:
+                self._close_socket(raw)
+        finally:
+            with self._candidate_lock:
+                self._candidate_sockets.discard(raw)
+                if secure is not None:
+                    self._candidate_sockets.discard(secure)
 
     def stop(self):
+        with self._admission_lock:
+            self._running = False
+            self._server_generation += 1
+        with self._candidate_lock:
+            candidates = tuple(self._candidate_sockets)
+            self._candidate_sockets.clear()
+        for candidate in candidates:
+            self._close_socket(candidate)
         self.disconnect()
-        try:
-            self.server_sock.close()
-        except:
-            pass
+        server, self.server_sock = self.server_sock, None
+        if server is not None:
+            self._close_socket(server)
+
 
 class NetworkClient(NetworkNode):
-    def __init__(self, password):
+    def __init__(
+        self,
+        password,
+        *,
+        role="control",
+        trust_store=None,
+        fingerprint_approval=None,
+        expected_fingerprint=None,
+        lane_token=None,
+        session_id=None,
+        connect_timeout=3.0,
+        handshake_timeout=3.0,
+        auth_timeout=3.0,
+        approval_timeout=120.0,
+    ):
         super().__init__()
+        if role not in {"control", "data"}:
+            raise ValueError("network client role must be control or data")
         self.is_server = False
         self.password = password
+        self.role = role
+        self.trust_store = trust_store or PeerTrustStore()
+        self.fingerprint_approval = fingerprint_approval
+        self.expected_fingerprint = expected_fingerprint
+        self.lane_token = lane_token
+        self.session_id = session_id
+        self.connect_timeout = float(connect_timeout)
+        self.handshake_timeout = float(handshake_timeout)
+        self.auth_timeout = float(auth_timeout)
+        self.approval_timeout = float(approval_timeout)
+        self.host = None
+        self.port = None
+        self.session_info = None
+        self._pending_trust = None
 
     def connect(self, host, port, callback):
-        def _connect_thread():
+        def worker():
+            raw = None
+            secure = None
+            reported = False
+
+            def report(success, error):
+                nonlocal reported
+                if not reported and callback is not None:
+                    reported = True
+                    callback(success, error)
+
             try:
                 self.host = host
-                raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                raw_sock.settimeout(3.0) # 3 second timeout for IP unreachable
-                raw_sock.connect((host, port))
-                raw_sock.settimeout(None) # Restore blocking mode for SSL
-                
-                ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                
-                self.sock = ssl_context.wrap_socket(raw_sock, server_hostname=host)
-                self.connected = True
-                self.authenticated = False
-                
-                self.receive_thread = threading.Thread(target=self._receive_loop, args=(self.sock,), daemon=True)
-                self.receive_thread.start()
-                
-                # Send auth packet
-                self.send_message({'type': 'auth', 'password': self.password})
-                
-                # Wait for auth response (timeout after 2s)
-                start_time = time.time()
-                while not self.authenticated and self.connected:
-                    if time.time() - start_time > 2.0:
-                        logger.error("Authentication timed out")
-                        self.disconnect()
-                        if callback: callback(False, "Authentication timed out")
-                        return
-                    time.sleep(0.1)
-                    
-                if self.authenticated:
-                    if callback: callback(True, None)
+                self.port = int(port)
+                raw = socket.create_connection((host, port), timeout=self.connect_timeout)
+                raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                raw.settimeout(self.handshake_timeout)
+                secure = _tls_client_context().wrap_socket(raw, server_hostname=host)
+                certificate = secure.getpeercert(binary_form=True)
+                if not certificate:
+                    raise ssl.SSLError("server did not provide a certificate")
+                fingerprint = hashlib.sha256(certificate).hexdigest()
+                if self.role == "control":
+                    peer = self.trust_store.peer_id(host, port)
+                    pinned = self.trust_store.load(peer)
+                    if pinned is not None and pinned != fingerprint:
+                        raise PeerIdentityChanged("server identity changed; re-pair is required")
+                    if pinned is None:
+                        pending = PendingPeerTrust(self.trust_store, peer, fingerprint)
+                        if self.fingerprint_approval is None:
+                            raise PairingRequired("first connection requires pairing approval")
+                        if not self._request_pairing_approval(fingerprint, peer):
+                            pending.decline()
+                            raise PairingDeclined("pairing was declined")
+                        pending.approve()
+                        self._pending_trust = pending
+                    request = {"type": "auth", "password": self.password}
                 else:
-                    if callback: callback(False, "Connection disconnected during auth")
-            except Exception as e:
-                logger.error(f"Failed to connect to {host}:{port}: {e}")
-                if callback: callback(False, str(e))
-                
-        threading.Thread(target=_connect_thread, daemon=True).start()
+                    if not self.expected_fingerprint or fingerprint != self.expected_fingerprint:
+                        raise PeerIdentityChanged("secondary lane certificate does not match control")
+                    request = {
+                        "type": "lane_auth",
+                        "token": self.lane_token,
+                        "session_id": self.session_id,
+                    }
+                secure.settimeout(self.auth_timeout)
+                _write_message(secure, request)
+                response = _read_message(secure)
+                if response.get("type") != "auth_success":
+                    raise SessionAuthenticationError("authentication was not acknowledged")
+                if self.role == "control":
+                    required = ("session_id", "data_token", "file_token")
+                    if not all(isinstance(response.get(key), str) for key in required):
+                        raise NetworkProtocolError("control session offer is incomplete")
+                    self.session_info = {key: response[key] for key in required}
+                    if self._pending_trust is not None:
+                        self._pending_trust.authenticated()
+                secure.settimeout(None)
+                generation = self._attach_socket(secure)
+                self.trigger_callbacks("connected", {"host": host, "session_id": response.get("session_id")})
+                self.receive_thread = threading.Thread(
+                    target=self._receive_loop,
+                    args=(secure, generation),
+                    daemon=True,
+                )
+                self.receive_thread.start()
+                report(True, None)
+            except Exception as error:
+                if secure is not None:
+                    self._close_socket(secure)
+                elif raw is not None:
+                    self._close_socket(raw)
+                report(False, str(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _request_pairing_approval(self, fingerprint, peer):
+        result = []
+        finished = threading.Event()
+
+        def approve():
+            try:
+                result.append(bool(self.fingerprint_approval(fingerprint, peer)))
+            finally:
+                finished.set()
+
+        threading.Thread(target=approve, daemon=True).start()
+        if not finished.wait(self.approval_timeout):
+            raise PairingTimeout("pairing approval timed out")
+        return result[0] if result else False
+
+    def commit_peer_trust(self):
+        pending = self._pending_trust
+        if pending is None:
+            return False
+        pending.lanes_bound()
+        committed = pending.commit_if_ready()
+        if committed:
+            self._pending_trust = None
+        return committed

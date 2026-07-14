@@ -55,13 +55,15 @@ class TransferSender:
             verified = threading.Event()
             self._verified[manifest.job_id] = verified
             self.lane.send({"type": "job_complete", "job_id": manifest.job_id})
-            if not verified.wait(30):
-                raise TimeoutError("destination did not verify the file transfer")
+            deadline = self.clock() + 30
+            while not verified.wait(0.05):
+                self._check_cancelled(manifest.job_id)
+                if self.clock() >= deadline:
+                    raise TimeoutError("destination did not verify the file transfer")
             self._waiting(manifest, label)
         except TransferCancelled:
             with self._paste_lock:
                 self._paste_jobs.pop(manifest.job_id, None)
-            self.lane.send({"type": "job_cancelled", "job_id": manifest.job_id})
             raise
         except Exception as error:
             with self._paste_lock:
