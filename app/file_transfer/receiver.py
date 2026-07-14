@@ -88,6 +88,8 @@ class TransferReceiver:
             },
             "paste_started": None,
             "network_verified": False,
+            "drop_performed": False,
+            "cleanup_generation": 0,
             "last_progress_bytes": -1,
             "last_progress_time": 0.0,
             "staging_key": AESGCM.generate_key(bit_length=256),
@@ -187,6 +189,7 @@ class TransferReceiver:
             activity = job["stream_activity"][normalized]
             activity["active"] += 1
             activity["generation"] += 1
+            job["cleanup_generation"] += 1
 
     def record_stream_close(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)
@@ -201,8 +204,18 @@ class TransferReceiver:
             activity["generation"] += 1
             generation = activity["generation"]
             incomplete = job["coverage"][normalized].covered < job["items"][normalized].size
-            if activity["active"] or not incomplete:
+            if activity["active"]:
                 return True
+            if not incomplete:
+                if job["drop_performed"] and job["network_verified"]:
+                    cleanup_generation = self._next_cleanup_generation(job)
+                else:
+                    return True
+            else:
+                cleanup_generation = None
+        if cleanup_generation is not None:
+            self._schedule_terminal_cleanup(job_id, cleanup_generation)
+            return True
         timer = self.timer_factory(
             self.stream_close_grace,
             lambda: self._confirm_stream_abandoned(job_id, normalized, generation),
@@ -232,12 +245,20 @@ class TransferReceiver:
         job = self._jobs.get(job_id)
         if job is None:
             return False
-        covered = self._paste_covered(job)
-        phase = (
-            TransferPhase.COMPLETED
-            if job["network_verified"] and covered == job["manifest"].total_size
-            else TransferPhase.CANCELLED
-        )
+        with job["condition"]:
+            job["drop_performed"] = True
+            covered = self._paste_covered(job)
+            phase = (
+                TransferPhase.COMPLETED
+                if job["network_verified"] and covered == job["manifest"].total_size
+                else TransferPhase.CANCELLED
+            )
+            if phase is TransferPhase.COMPLETED and not any(
+                activity["active"] for activity in job["stream_activity"].values()
+            ):
+                cleanup_generation = self._next_cleanup_generation(job)
+            else:
+                cleanup_generation = None
         self._update_paste(job_id, phase, covered, 0.0)
         if self.lane is not None:
             self._progress_queue.put({
@@ -248,6 +269,49 @@ class TransferReceiver:
                 "bytes_total": job["manifest"].total_size,
                 "bytes_per_second": 0.0,
             })
+        if cleanup_generation is not None:
+            self._schedule_terminal_cleanup(job_id, cleanup_generation)
+        return True
+
+    @staticmethod
+    def _next_cleanup_generation(job):
+        job["cleanup_generation"] += 1
+        return job["cleanup_generation"]
+
+    def _schedule_terminal_cleanup(self, job_id, generation):
+        timer = self.timer_factory(
+            self.stream_close_grace,
+            lambda: self._cleanup_terminal_job(job_id, generation),
+        )
+        if hasattr(timer, "daemon"):
+            timer.daemon = True
+        timer.start()
+
+    def _cleanup_terminal_job(self, job_id, generation):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        with job["condition"]:
+            if (
+                not job["drop_performed"]
+                or not job["network_verified"]
+                or job["cleanup_generation"] != generation
+                or any(
+                    activity["active"]
+                    for activity in job["stream_activity"].values()
+                )
+            ):
+                return False
+            for staged in job["staged"].values():
+                staged.abort()
+            for completed in job["completed"].values():
+                completed.abort()
+            job["staged"].clear()
+            job["completed"].clear()
+            job["error"] = "transfer cache was released"
+            job["condition"].notify_all()
+            if self._jobs.get(job_id) is job:
+                self._jobs.pop(job_id, None)
         return True
 
     def read_range(self, job_id, relative_path, offset, count):

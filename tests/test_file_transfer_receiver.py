@@ -195,6 +195,56 @@ class TransferReceiverTests(unittest.TestCase):
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.COMPLETED)
         self.assertEqual(controller.status(manifest.job_id).bytes_done, len(content))
 
+    def test_successful_drop_removes_completed_ciphertext_after_last_stream_closes(self):
+        callbacks = []
+
+        class Timer:
+            def __init__(self, delay, callback):
+                callbacks.append(callback)
+
+            def start(self):
+                return None
+
+        content = b"encrypted cache must be temporary"
+        item = FileItem(
+            "copy.bin", ItemType.FILE, len(content), 1,
+            hashlib.sha256(content).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receiver = TransferReceiver(
+                root, controller=controller, timer_factory=Timer
+            )
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": 0,
+                "compressed": False,
+                "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.complete_job(manifest.job_id)
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            receiver.record_stream_read(
+                manifest.job_id, item.relative_path, 0, len(content)
+            )
+            receiver.record_performed_drop(manifest.job_id)
+
+            self.assertTrue(list((root / "completed").rglob("*.cache")))
+            self.assertFalse(callbacks)
+
+            receiver.record_stream_close(manifest.job_id, item.relative_path)
+            callbacks.pop()()
+
+            self.assertFalse(list((root / "completed").rglob("*.cache")))
+            self.assertNotIn(manifest.job_id, receiver._jobs)
+            self.assertEqual(
+                controller.status(manifest.job_id).phase, TransferPhase.COMPLETED
+            )
+
     def test_performed_drop_with_incomplete_coverage_cancels_paste(self):
         item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
         manifest = Manifest.create([item])
