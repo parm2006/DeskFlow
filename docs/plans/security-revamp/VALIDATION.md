@@ -42,9 +42,13 @@ checks, not substitutes for the LAN measurement below.
 The real Windows CustomTkinter runtime was also exercised locally. The root was
 resizable, and the status/tab width changed from 660 px at a 700 px window to
 310 px at a 350 px window. The read-only status used word wrapping and allowed
-text selection. The inline pairing panel displayed the expected short code and
-full fingerprint, recorded approval, and hid after the decision. This validates
-widget behavior but does not replace visual confirmation on both target PCs.
+text selection. The client-only pairing modal ran as a separate grabbed
+top-level, centered over DeskFlow, displayed the short code and selectable full
+fingerprint, adapted its wrapping at the 360 x 320 minimum modal size, kept both
+actions visible, recorded approval, released its grab, and closed. Automated
+tests also cover decline, timeout, application shutdown, late decisions, and a
+root-destruction scheduling race. This validates local widget behavior but does
+not replace visual confirmation on both target PCs.
 
 ## Two-PC prerequisites
 
@@ -53,8 +57,15 @@ widget behavior but does not replace visual confirmation on both target PCs.
 2. Record both Windows versions, connection type, and negotiated Wi-Fi or
    Ethernet link speed.
 3. Start each copy with `run.bat`. Do not start any background/daemon prototype.
-4. Use a newly generated 100 MiB test file plus a small text file. Do not use a
-   private document for failure testing.
+
+### Recorded target environment (2026-07-13)
+
+| Role | Windows | IPv4 | Connection | Adapter | Reported rates | Signal |
+|---|---|---|---|---|---|---|
+| Server | Redacted Windows environment | 192.0.2.10 | 5 GHz 802.11ac Wi-Fi | Redacted adapter | Redacted rates | 99% |
+| Client | Redacted Windows environment | 192.0.2.11 | 5 GHz 802.11ac Wi-Fi | Redacted adapter | Redacted rates | 82% |
+
+The historical network baseline was redacted.
 
 ## Two-PC acceptance matrix
 
