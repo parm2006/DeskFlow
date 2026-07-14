@@ -116,22 +116,62 @@ The historical network baseline was redacted.
 
 Record PASS/FAIL, observed speed or latency where requested, and a concise note.
 
+### Validation checkpoint: 2026-07-13
+
+Testing stopped after repeat-transfer and remote-input failures. Rows 1-6 passed
+on the client-to-server pairing path and do not need to be repeated unless a
+later fix changes pairing, trust, or authentication. A large transfer completed
+at the restored speed, and cancellation updated both DeskFlow windows and the
+transfer toast. A later transfer remained at `Waiting for Windows Explorer`
+until it was cancelled. Delete did not affect the selected remote file.
+
+The client also failed to reconnect once without an error, then connected after
+DeskFlow was relaunched. Treat reconnect as failed until it works repeatedly
+without restarting either application. The unchanged pairing code after
+forgetting trust is expected because the server identity did not change; the
+fresh comparison and approval in row 6 passed.
+
 | # | Test | Required result | Server → client | Client → server | Notes |
 |---:|---|---|---|---|---|
-| 1 | First pairing | Same short code on both PCs; full client fingerprint is selectable; no duplicate code |  | N/A |  |
-| 2 | Decline then retry | Decline saves no pin; next attempt asks again and can connect |  | N/A |  |
-| 3 | Wrong password then correct password | Wrong password saves no pin and does not poison the next connection |  | N/A |  |
-| 4 | Saved pairing reconnect | Reconnect succeeds without another approval prompt |  | N/A |  |
-| 5 | Changed server identity | Connection stops with inline identity-changed guidance; it never silently replaces the pin |  | N/A |  |
-| 6 | Inline re-pair | Forget/re-pair requires a fresh code comparison, then connects |  | N/A |  |
-| 7 | 100 MiB copy | Hash and size match; record elapsed seconds and MiB/s; no major regression from the same-machine `main` baseline |  |  |  |
-| 8 | Control latency under copy | Mouse remains smooth; typing, Delete, clicks, and scrolling arrive without visible stalls |  |  |  |
-| 9 | Clipboard under copy | Plain text and a screenshot can be copied and pasted while the 100 MiB file is moving |  |  |  |
-| 10 | Cancel at source | Both toasts enter cancelled and disappear; no later offset/hash error |  |  |  |
-| 11 | Cancel at destination | Both toasts enter cancelled and disappear; no cancellation echo |  |  |  |
-| 12 | Immediate next transfer | A small file succeeds immediately after each cancellation without reconnecting |  |  |  |
-| 13 | Disconnect/reconnect | Network loss clears the session and encrypted caches; reconnect creates a fresh usable session |  |  |  |
-| 14 | GUI resize and error copy | Long inline errors wrap at narrow and wide sizes and can be selected/copied; no extra error popup |  | N/A |  |
+| 1 | First pairing | Same short code on both PCs; full client fingerprint is selectable; no duplicate code | PASS | N/A | Pairing UI and comparison passed. |
+| 2 | Decline then retry | Decline saves no pin; next attempt asks again and can connect | PASS | N/A | Retry prompted and connected. |
+| 3 | Wrong password then correct password | Wrong password saves no pin and does not poison the next connection | PASS | N/A | Authentication recovered on the next attempt. Error wording still needs improvement. |
+| 4 | Saved pairing reconnect | Reconnect succeeds without another approval prompt | PASS | N/A | Saved pairing reconnect passed during the first six tests. |
+| 5 | Changed server identity | Connection stops with inline identity-changed guidance; it never silently replaces the pin | PASS | N/A | Changed identity was rejected. |
+| 6 | Inline re-pair | Forget/re-pair requires a fresh code comparison, then connects | PASS | N/A | Fresh approval succeeded. The code correctly stayed the same for the unchanged server identity. |
+| 7 | 100 MiB copy | Hash and size match; record elapsed seconds and MiB/s; no major regression from the same-machine `main` baseline | PARTIAL | NOT TESTED | Transfer speed was restored, but elapsed time, MiB/s, size, and hash still need recording. A later transfer stalled before Explorer consumed it. |
+| 8 | Control latency under copy | Mouse remains smooth; typing, Delete, clicks, and scrolling arrive without visible stalls | FAIL | NOT TESTED | Delete did not delete a selected remote file. Other inputs and latency still need explicit checks. |
+| 9 | Clipboard under copy | Plain text and a screenshot can be copied and pasted while the 100 MiB file is moving | NOT TESTED | NOT TESTED | Resume after the transfer lifecycle is fixed. |
+| 10 | Cancel at source | Both toasts enter cancelled and disappear; no later offset/hash error | PARTIAL | NOT TESTED | Cancellation synchronized between the windows and toast; direction and post-cancel health still need confirmation. |
+| 11 | Cancel at destination | Both toasts enter cancelled and disappear; no cancellation echo | PARTIAL | NOT TESTED | Cancellation synchronized between the windows and toast; direction and post-cancel health still need confirmation. |
+| 12 | Immediate next transfer | A small file succeeds immediately after each cancellation without reconnecting | NOT TESTED | NOT TESTED | The stalled second transfer was cancelled, but no third transfer was reported afterward. Test this after the repeat-transfer stall is fixed. |
+| 13 | Disconnect/reconnect | Network loss clears the session and encrypted caches; reconnect creates a fresh usable session | FAIL | NOT TESTED | One reconnect silently failed and worked only after relaunching DeskFlow. Repeated reconnect testing remains. |
+| 14 | GUI resize and error copy | Long inline errors wrap at narrow and wide sizes and can be selected/copied; no extra error popup | NOT TESTED | N/A | Screenshots show excess empty space. Requested behavior changed to a compact, fixed-size, non-maximizable window. |
+
+### Unresolved observations before resuming the matrix
+
+1. Replace generic socket/authentication text with safe, actionable messages,
+   including an explicit incorrect-password message.
+2. Persist the last successfully used Server or Client role and select that tab
+   when DeskFlow next starts. Do not save a role after a failed start or failed
+   connection.
+3. Place the cursor visually at the adjoining monitor edge. The current 96 px
+   entry inset is too large; retain only enough inset to prevent an immediate
+   switch-back.
+4. Reproduce the silent reconnect failure and make every failed attempt finish
+   with an actionable inline error.
+5. Reproduce the second-paste `Waiting for Windows Explorer` stall. Verify that
+   the virtual clipboard owner, paste injection worker, and transfer lifecycle
+   reset cleanly after success and cancellation.
+6. Restore Delete forwarding for a selected file on the controlled computer
+   without breaking ordinary typing or Ctrl+V interception.
+7. Redesign the root window to use its compact content size, disable resizing,
+   and disable maximizing. Long status text must still wrap and remain
+   selectable inside the fixed window.
+
+After these items are fixed and both PCs use the same new testing commit, resume
+with rows 7-14. Recheck only any of rows 1-6 whose pairing, trust, or
+authentication implementation changed.
 
 ## Changed-identity test without deleting the real identity
 
@@ -154,7 +194,8 @@ perform this test.
 - Commit tested on PC 2:
 - `main` 100 MiB baseline on the same link:
 - Security-revamp 100 MiB result on the same link:
-- Unexplained failures: none / list
+- Unexplained failures: repeat transfer stuck waiting for Explorer; Delete not
+  forwarded; one silent reconnect required an application relaunch
 - Tested by:
 - Date:
 
