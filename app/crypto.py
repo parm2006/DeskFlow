@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from app.dpapi import WindowsDataProtector
+from app.safe_errors import error_name
 
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,10 @@ class IdentityStore:
             try:
                 return self._load_active(False)
             except Exception as error:
-                logger.warning("DeskFlow identity is unreadable; quarantining it: %s", error)
+                logger.warning(
+                    "DeskFlow identity is unreadable; quarantining it (%s)",
+                    error_name(error),
+                )
                 self._quarantine_active()
                 return self._create(recovered=True)
         migrated = self._migrate_legacy()
@@ -200,7 +204,10 @@ class IdentityStore:
             if not _keys_match(private_key, certificate):
                 raise IdentityError("legacy certificate and key do not match")
         except Exception as error:
-            logger.warning("Ignoring unreadable legacy DeskFlow identity: %s", error)
+            logger.warning(
+                "Ignoring unreadable legacy DeskFlow identity (%s)",
+                error_name(error),
+            )
             return None
         material = self._create(False, private_key=private_key, certificate=certificate)
         key_path.unlink()
@@ -217,8 +224,11 @@ class IdentityStore:
                 for child in source.iterdir():
                     shutil.move(str(child), destination / child.name)
                 source.rmdir()
-        except Exception:
-            logger.exception("Could not fully quarantine the current DeskFlow identity")
+        except Exception as error:
+            logger.error(
+                "Could not fully quarantine the current DeskFlow identity (%s)",
+                error_name(error),
+            )
         self.pointer.unlink(missing_ok=True)
 
 
@@ -240,8 +250,10 @@ def ensure_certificates():
     try:
         load_identity()
         return True
-    except Exception:
-        logger.exception("Failed to load or create DeskFlow identity")
+    except Exception as error:
+        logger.error(
+            "Failed to load or create DeskFlow identity (%s)", error_name(error)
+        )
         return False
 
 

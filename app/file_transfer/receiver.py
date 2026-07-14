@@ -5,6 +5,7 @@ import threading
 import time
 from collections import OrderedDict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from app.safe_errors import error_name
 
 from .compression import decode_chunk
 from .models import ItemType, Manifest
@@ -337,8 +338,11 @@ class TransferReceiver:
             metadata = self._progress_queue.get()
             try:
                 self.lane.send(metadata)
-            except Exception:
-                logger.exception("Could not send Explorer paste progress")
+            except Exception as error:
+                logger.error(
+                    "Could not send Explorer paste progress (%s)",
+                    error_name(error),
+                )
 
     @staticmethod
     def _paste_covered(job):

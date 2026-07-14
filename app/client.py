@@ -18,6 +18,7 @@ from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
 from app.latest_wins_sender import LatestWinsSender
 from app.input_geometry import client_entry_position
+from app.safe_errors import error_name, public_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -228,11 +229,12 @@ class DeskFlowClient:
                 self._report_connect(True, None)
                 return True
             except Exception as error:
-                self.connect_error = str(error)
+                message = public_error_message(error, "secure session setup failed")
+                self.connect_error = message
                 self.clipboard.stop()
                 self.hotkey_monitor.stop()
                 self.disconnect(preserve_failure=True, error=error)
-                self._report_connect(False, str(error))
+                self._report_connect(False, message)
                 return False
 
     def _all_lanes_live(self):
@@ -278,10 +280,13 @@ class DeskFlowClient:
             try:
                 self._connect_file_lane(data)
             except Exception as error:
-                logger.error(f"Secure file lane connection failed: {error}")
-                self.connect_error = str(error)
+                logger.error(
+                    "Secure file lane connection failed (%s)", error_name(error)
+                )
+                message = public_error_message(error, "secure file connection failed")
+                self.connect_error = message
                 self.disconnect(preserve_failure=True, error=error)
-                self._report_connect(False, f"File Socket Error: {error}")
+                self._report_connect(False, message)
 
         threading.Thread(target=connect_file_lane, daemon=True).start()
 

@@ -10,6 +10,7 @@ import threading
 from enum import Enum
 
 from app.crypto import load_identity
+from app.safe_errors import error_name, public_error_message
 from app.session import SessionAuthenticationError, SessionCoordinator
 from app.trust import PeerTrustStore, PendingPeerTrust
 
@@ -21,23 +22,23 @@ MAX_AUTH_MESSAGE_SIZE = 4096
 
 
 class NetworkProtocolError(ValueError):
-    pass
+    safe_for_user = True
 
 
 class PairingRequired(ConnectionError):
-    pass
+    safe_for_user = True
 
 
 class PairingDeclined(ConnectionError):
-    pass
+    safe_for_user = True
 
 
 class PairingTimeout(ConnectionError):
-    pass
+    safe_for_user = True
 
 
 class PeerIdentityChanged(ConnectionError):
-    pass
+    safe_for_user = True
 
 
 class ConnectionPhase(str, Enum):
@@ -116,8 +117,11 @@ class NetworkNode:
         for callback in tuple(self.callbacks.get(event_type, ())):
             try:
                 callback(data)
-            except Exception:
-                logger.exception("Network callback failed for event %s", event_type)
+            except Exception as error:
+                logger.error(
+                    "Network callback failed for event %s (%s)",
+                    event_type, error_name(error),
+                )
 
     def _attach_socket(self, conn):
         with self._state_lock:
@@ -148,8 +152,8 @@ class NetworkNode:
                     return False
                 _write_message(conn, message)
             return True
-        except Exception:
-            logger.exception("Network send failed")
+        except Exception as error:
+            logger.error("Network send failed (%s)", error_name(error))
             self._disconnect_socket(conn, generation)
             return False
 
@@ -260,8 +264,10 @@ class NetworkServer(NetworkNode):
             self.accept_thread.start()
             logger.info("%s server listening on %s:%s", self.role, self.host, self.port)
             return True
-        except Exception:
-            logger.exception("Failed to start %s server", self.role)
+        except Exception as error:
+            logger.error(
+                "Failed to start %s server (%s)", self.role, error_name(error)
+            )
             self.stop()
             return False
 
@@ -501,7 +507,7 @@ class NetworkClient(NetworkNode):
                     self._close_socket(secure)
                 elif raw is not None:
                     self._close_socket(raw)
-                report(False, str(error))
+                report(False, public_error_message(error, "connection failed"))
 
         threading.Thread(target=worker, daemon=True).start()
 

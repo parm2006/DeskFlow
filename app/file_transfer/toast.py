@@ -4,6 +4,7 @@ import logging
 import customtkinter as ctk
 
 from app.input_geometry import place_windows_window_in_work_area
+from app.safe_errors import error_name
 from .status import TransferPhase
 
 
@@ -98,8 +99,11 @@ class TransferToast:
         try:
             target = place_windows_window_in_work_area(self.window.winfo_id())
             logger.debug("Transfer toast positioned in physical work-area rectangle %s", target)
-        except OSError:
-            logger.exception("Could not position transfer toast in its monitor work area")
+        except OSError as error:
+            logger.error(
+                "Could not position transfer toast in its monitor work area (%s)",
+                error_name(error),
+            )
         self.window.lift()
 
     def _schedule_hide(self, delay_ms):

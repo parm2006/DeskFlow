@@ -27,7 +27,11 @@ The suite directly covers:
   lookup;
 - cancellation from either protocol endpoint, duplicate requests, late chunks
   and completion frames, cancellation during verification, and a successful
-  immediately following job.
+  immediately following job;
+- error-boundary redaction: typed DeskFlow failures retain safe actionable text,
+  while unknown exceptions and logs expose only stable error categories. A
+  regression injects a private Windows path through `PermissionError` and proves
+  that neither the path nor raw exception text reaches logs.
 
 Connection-state evidence distinguishes a failed attempt from cleanup:
 `NetworkClient` enters `FAILED` and retains its typed `last_error`; an explicit

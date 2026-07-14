@@ -1,6 +1,7 @@
 import logging
 from pynput.mouse import Controller as MouseController, Listener as MouseListener, Button
 from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener, Key, KeyCode
+from app.safe_errors import error_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,8 @@ class InputHandler:
         for cb in self.callbacks.get(event_type, []):
             try:
                 cb(*args)
-            except Exception as e:
-                logger.error(f"Callback error: {e}")
+            except Exception as error:
+                logger.error("Callback failed (%s)", error_name(error))
 
     def start_edge_detection(self, edge=None):
         if edge:

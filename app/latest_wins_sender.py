@@ -2,6 +2,8 @@ import logging
 import threading
 import time
 
+from app.safe_errors import error_name
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,8 @@ class LatestWinsSender:
 
             try:
                 self._send(payload)
-            except Exception:
-                logger.exception("Latest-wins send failed")
+            except Exception as error:
+                logger.error("Latest-wins send failed (%s)", error_name(error))
             finally:
                 with self._condition:
                     self._sending = False

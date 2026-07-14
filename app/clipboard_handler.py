@@ -6,6 +6,8 @@ import zlib
 import win32clipboard
 import hashlib
 
+from app.safe_errors import error_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,8 +40,10 @@ class ClipboardHandler:
         try:
             self.cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
             self.cf_rtf = win32clipboard.RegisterClipboardFormat("Rich Text Format")
-        except Exception as e:
-            logger.error(f"Failed to register custom formats: {e}")
+        except Exception as error:
+            logger.error(
+                "Failed to register custom formats (%s)", error_name(error)
+            )
             self.cf_html = None
             self.cf_rtf = None
 
@@ -124,8 +128,8 @@ class ClipboardHandler:
         if img_b64:
             try:
                 dib_data = zlib.decompress(base64.b64decode(img_b64))
-            except Exception as e:
-                logger.error(f"Error decompressing image: {e}")
+            except Exception as error:
+                logger.error("Error decompressing image (%s)", error_name(error))
                 self.is_injecting = False
                 return
 
@@ -133,15 +137,15 @@ class ClipboardHandler:
         if html_b64 and self.cf_html:
             try:
                 html_data = zlib.decompress(base64.b64decode(html_b64))
-            except Exception as e:
-                logger.error(f"Error decompressing HTML: {e}")
+            except Exception as error:
+                logger.error("Error decompressing HTML (%s)", error_name(error))
 
         rtf_data = None
         if rtf_b64 and self.cf_rtf:
             try:
                 rtf_data = zlib.decompress(base64.b64decode(rtf_b64))
-            except Exception as e:
-                logger.error(f"Error decompressing RTF: {e}")
+            except Exception as error:
+                logger.error("Error decompressing RTF (%s)", error_name(error))
 
         # Record hashes of plain text and image to prevent forwarding back
         self.last_text_hash = self._get_hash(text)
@@ -170,8 +174,11 @@ class ClipboardHandler:
                         break
                     finally:
                         win32clipboard.CloseClipboard()
-                except Exception as e:
-                    logger.debug(f"Clipboard locked during inject, retrying... {e}")
+                except Exception as error:
+                    logger.debug(
+                        "Clipboard locked during inject, retrying (%s)",
+                        error_name(error),
+                    )
                     time.sleep(0.1)
         finally:
             # Let the OS settle, then fetch the updated sequence number
@@ -208,8 +215,11 @@ class ClipboardHandler:
                     break
                 finally:
                     win32clipboard.CloseClipboard()
-            except Exception as e:
-                logger.debug(f"Clipboard locked during read, retrying... {e}")
+            except Exception as error:
+                logger.debug(
+                    "Clipboard locked during read, retrying (%s)",
+                    error_name(error),
+                )
                 time.sleep(0.1)
                 
         if text_data:
@@ -280,6 +290,6 @@ class ClipboardHandler:
                                 self.last_image_hash = image_hash
                                 
                             self.on_clipboard_change(snapshot)
-            except Exception as e:
-                logger.error(f"Error in poll clipboard: {e}")
+            except Exception as error:
+                logger.error("Error in poll clipboard (%s)", error_name(error))
             time.sleep(0.5)

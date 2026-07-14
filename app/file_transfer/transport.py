@@ -6,6 +6,7 @@ import threading
 import logging
 
 from app.crypto import load_identity
+from app.safe_errors import error_name
 
 from .protocol import (
     MAX_METADATA_SIZE,
@@ -116,10 +117,11 @@ class _FileLane:
                 for callback in self._callbacks.get(metadata.get("type"), ()):
                     try:
                         callback(metadata, payload)
-                    except Exception:
-                        logger.exception(
-                            "File-lane callback failed for event %s; connection remains available",
-                            metadata.get("type"),
+                    except Exception as error:
+                        logger.error(
+                            "File-lane callback failed for event %s; "
+                            "connection remains available (%s)",
+                            metadata.get("type"), error_name(error),
                         )
         except (ConnectionError, OSError, FrameError):
             pass

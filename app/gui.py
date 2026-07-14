@@ -7,6 +7,7 @@ from app.client import DeskFlowClient
 from app.file_transfer.toast import TransferToast
 from app.crypto import certificate_fingerprint, pairing_code_from_fingerprint
 from app.pairing_dialog import PairingApprovalController
+from app.safe_errors import error_name, public_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +141,8 @@ class DeskFlowGUI(ctk.CTk):
             if os.path.exists(KNOWN_HOSTS_FILE):
                 with open(KNOWN_HOSTS_FILE, 'r') as f:
                     return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load known hosts: {e}")
+        except Exception as error:
+            logger.error("Failed to load known hosts (%s)", error_name(error))
         return []
 
     def save_known_host(self, ip, port):
@@ -156,8 +157,8 @@ class DeskFlowGUI(ctk.CTk):
                 json.dump(self.known_hosts, f)
             # Update combo box values
             self.client_ip_entry.configure(values=[h['ip'] for h in self.known_hosts])
-        except Exception as e:
-            logger.error(f"Failed to save known host: {e}")
+        except Exception as error:
+            logger.error("Failed to save known host (%s)", error_name(error))
 
     def on_ip_select(self, choice):
         for host in self.known_hosts:
@@ -297,7 +298,10 @@ class DeskFlowGUI(ctk.CTk):
             message = "Saved identity cleared. Connect again to re-pair." if cleared else "No saved identity existed for this server."
             self._set_status(message, "orange")
         except Exception as error:
-            self._set_status(f"Could not clear saved identity\n{error}", "red")
+            self._set_status(
+                public_error_message(error, "could not clear saved identity"),
+                "red",
+            )
 
     def _on_client_disconnected_event(self, data):
         self.after(0, self.disconnect_client)

@@ -10,7 +10,7 @@ import uuid
 
 
 class SessionAuthenticationError(ValueError):
-    pass
+    safe_for_user = True
 
 
 @dataclass(frozen=True)
