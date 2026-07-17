@@ -124,11 +124,18 @@ def _read_message(conn, max_size=MAX_MESSAGE_SIZE):
     return value
 
 
-def _write_message(conn, value):
-    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+def _encode_message(value):
+    try:
+        payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise NetworkProtocolError("message is not valid JSON") from error
     if len(payload) > MAX_MESSAGE_SIZE:
         raise NetworkProtocolError("message exceeds the size limit")
-    conn.sendall(_HEADER.pack(len(payload)) + payload)
+    return _HEADER.pack(len(payload)) + payload
+
+
+def _write_message(conn, value):
+    conn.sendall(_encode_message(value))
 
 
 class NetworkNode:
@@ -182,6 +189,11 @@ class NetworkNode:
             return self.sock is conn and self._generation == generation and self.connected
 
     def send_message(self, message):
+        try:
+            frame = _encode_message(message)
+        except NetworkProtocolError as error:
+            logger.error("Local network message was rejected (%s)", error_name(error))
+            return False
         with self._state_lock:
             conn = self.sock
             generation = self._generation
@@ -192,7 +204,7 @@ class NetworkNode:
             with self._send_lock:
                 if not self._is_current(conn, generation):
                     return False
-                _write_message(conn, message)
+                conn.sendall(frame)
             return True
         except Exception as error:
             logger.error("Network send failed (%s)", error_name(error))

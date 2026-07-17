@@ -2,7 +2,7 @@
 
 > Preserve current mouse, keyboard, and rich clipboard behavior. Use test-first key-state and routing tests before wiring OS hooks.
 >
-> **Drift check**: `git -c safe.directory='<REPOSITORY_ROOT>' diff d352936 -- app/input_handler.py app/clipboard_handler.py app/client.py app/server.py app/windows_virtual_files.py app/file_transfer tests`
+> **Drift check**: `git diff d352936 -- app/input_handler.py app/clipboard_handler.py app/client.py app/server.py app/windows_virtual_files.py app/file_transfer tests`
 
 ## Status
 

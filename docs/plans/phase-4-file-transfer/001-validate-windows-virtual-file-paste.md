@@ -2,7 +2,7 @@
 
 > Follow test-first where automation is possible. Stop and write a handback if pywin32 cannot keep an OLE data object alive independently after the global clipboard changes.
 >
-> **Drift check**: `git -c safe.directory='<REPOSITORY_ROOT>' diff d352936 -- app tests requirements.txt`
+> **Drift check**: `git diff d352936 -- app tests requirements.txt`
 
 ## Status
 

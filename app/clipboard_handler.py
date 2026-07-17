@@ -2,6 +2,7 @@ import threading
 import time
 import logging
 import base64
+import binascii
 import zlib
 import win32clipboard
 import hashlib
@@ -9,6 +10,36 @@ import hashlib
 from app.safe_errors import error_name
 
 logger = logging.getLogger(__name__)
+
+MAX_RICH_CLIPBOARD_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_CLIPBOARD_BYTES = 50 * 1024 * 1024
+
+
+class ClipboardPayloadError(ValueError):
+    pass
+
+
+def decode_compressed_clipboard_value(value, max_plaintext_bytes):
+    if not isinstance(value, str):
+        raise ClipboardPayloadError("compressed clipboard value must be text")
+    if not isinstance(max_plaintext_bytes, int) or max_plaintext_bytes < 0:
+        raise ValueError("clipboard plaintext limit must be non-negative")
+    try:
+        compressed = base64.b64decode(value, validate=True)
+        decoder = zlib.decompressobj()
+        plaintext = decoder.decompress(compressed, max_plaintext_bytes + 1)
+    except (binascii.Error, ValueError, zlib.error) as error:
+        raise ClipboardPayloadError("compressed clipboard value is invalid") from error
+    if (
+        len(plaintext) > max_plaintext_bytes
+        or not decoder.eof
+        or decoder.unconsumed_tail
+        or decoder.unused_data
+    ):
+        raise ClipboardPayloadError(
+            "compressed clipboard value exceeds its plaintext limit"
+        )
+    return plaintext
 
 
 def encode_clipboard_snapshot(snapshot):
@@ -94,28 +125,28 @@ class ClipboardHandler:
         if text and not isinstance(text, str):
             logger.warning("Text payload is not a string")
             text = None
-        elif text and len(text) > 1024 * 1024 * 5:
+        elif text and len(text.encode("utf-8")) > MAX_RICH_CLIPBOARD_BYTES:
             logger.warning("Text payload exceeding 5MB limit")
             text = None
             
         if img_b64 and not isinstance(img_b64, str):
             logger.warning("Image payload is not a string")
             img_b64 = None
-        elif img_b64 and len(img_b64) > 1024 * 1024 * 50:
+        elif img_b64 and len(img_b64) > MAX_IMAGE_CLIPBOARD_BYTES:
             logger.warning("Image payload exceeding 50MB limit")
             img_b64 = None
 
         if html_b64 and not isinstance(html_b64, str):
             logger.warning("HTML payload is not a string")
             html_b64 = None
-        elif html_b64 and len(html_b64) > 1024 * 1024 * 5:
+        elif html_b64 and len(html_b64) > MAX_RICH_CLIPBOARD_BYTES:
             logger.warning("HTML payload exceeding 5MB limit")
             html_b64 = None
 
         if rtf_b64 and not isinstance(rtf_b64, str):
             logger.warning("RTF payload is not a string")
             rtf_b64 = None
-        elif rtf_b64 and len(rtf_b64) > 1024 * 1024 * 5:
+        elif rtf_b64 and len(rtf_b64) > MAX_RICH_CLIPBOARD_BYTES:
             logger.warning("RTF payload exceeding 5MB limit")
             rtf_b64 = None
 
@@ -127,7 +158,9 @@ class ClipboardHandler:
         dib_data = None
         if img_b64:
             try:
-                dib_data = zlib.decompress(base64.b64decode(img_b64))
+                dib_data = decode_compressed_clipboard_value(
+                    img_b64, MAX_IMAGE_CLIPBOARD_BYTES
+                )
             except Exception as error:
                 logger.error("Error decompressing image (%s)", error_name(error))
                 self.is_injecting = False
@@ -136,14 +169,18 @@ class ClipboardHandler:
         html_data = None
         if html_b64 and self.cf_html:
             try:
-                html_data = zlib.decompress(base64.b64decode(html_b64))
+                html_data = decode_compressed_clipboard_value(
+                    html_b64, MAX_RICH_CLIPBOARD_BYTES
+                )
             except Exception as error:
                 logger.error("Error decompressing HTML (%s)", error_name(error))
 
         rtf_data = None
         if rtf_b64 and self.cf_rtf:
             try:
-                rtf_data = zlib.decompress(base64.b64decode(rtf_b64))
+                rtf_data = decode_compressed_clipboard_value(
+                    rtf_b64, MAX_RICH_CLIPBOARD_BYTES
+                )
             except Exception as error:
                 logger.error("Error decompressing RTF (%s)", error_name(error))
 

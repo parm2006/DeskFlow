@@ -2,7 +2,7 @@
 
 > UI must never steal focus from the paste target or input overlay.
 >
-> **Drift check**: `git -c safe.directory='<REPOSITORY_ROOT>' diff d352936 -- app/gui.py app/file_transfer tests README.md features.md plan.md`
+> **Drift check**: `git diff d352936 -- app/gui.py app/file_transfer tests README.md features.md plan.md`
 
 ## Status
 

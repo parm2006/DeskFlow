@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,27 @@ class IdentityStoreTests(unittest.TestCase):
             quarantined = list((root / "quarantine").glob("*/key.pem"))
             self.assertEqual(len(quarantined), 1)
             self.assertEqual(quarantined[0].read_bytes(), b"corrupt")
+
+    def test_invalid_generation_pointer_cannot_quarantine_unrelated_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "identity"
+            unrelated = base / "unrelated"
+            unrelated.mkdir()
+            marker = unrelated / "must-stay.txt"
+            marker.write_text("unrelated data", encoding="utf-8")
+            root.mkdir()
+            (root / "current.json").write_text(
+                json.dumps({"generation": "../../unrelated"}),
+                encoding="utf-8",
+            )
+
+            recovered = self.make_store(root).load_or_create()
+
+            self.assertTrue(recovered.recovered)
+            self.assertTrue(marker.exists(), "identity recovery moved an unrelated file")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "unrelated data")
+            self.assertFalse(list((root / "quarantine").rglob("must-stay.txt")))
 
     def test_migrates_valid_legacy_plaintext_identity_and_removes_plaintext_key(self):
         with tempfile.TemporaryDirectory() as root_dir, tempfile.TemporaryDirectory() as legacy_dir:

@@ -121,11 +121,7 @@ class IdentityStore:
     def _load_active(self, recovered):
         pointer = json.loads(self.pointer.read_text(encoding="utf-8"))
         generation = pointer.get("generation")
-        if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation):
-            raise IdentityError("identity pointer is invalid")
-        directory = (self.generations / generation).resolve()
-        if directory.parent != self.generations.resolve():
-            raise IdentityError("identity generation escaped its root")
+        directory = self._generation_directory(generation)
         cert_path = directory / "cert.pem"
         key_path = directory / "key.pem"
         password_path = directory / "key-password.dpapi"
@@ -144,6 +140,14 @@ class IdentityStore:
             fingerprint=_fingerprint(certificate),
             recovered=recovered,
         )
+
+    def _generation_directory(self, generation):
+        if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation):
+            raise IdentityError("identity pointer is invalid")
+        directory = (self.generations / generation).resolve()
+        if directory.parent != self.generations.resolve():
+            raise IdentityError("identity generation escaped its root")
+        return directory
 
     def _create(self, recovered, private_key=None, certificate=None):
         private_key = private_key or rsa.generate_private_key(
@@ -214,13 +218,13 @@ class IdentityStore:
         return material
 
     def _quarantine_active(self):
-        destination = self.quarantine / uuid.uuid4().hex
-        destination.mkdir(parents=True, exist_ok=False)
         try:
             pointer = json.loads(self.pointer.read_text(encoding="utf-8"))
             generation = pointer.get("generation")
-            source = self.generations / str(generation)
+            source = self._generation_directory(generation)
             if source.is_dir():
+                destination = self.quarantine / uuid.uuid4().hex
+                destination.mkdir(parents=True, exist_ok=False)
                 for child in source.iterdir():
                     shutil.move(str(child), destination / child.name)
                 source.rmdir()

@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from app.network import NetworkNode
+from app.network import MAX_MESSAGE_SIZE, NetworkNode
 
 
 class OverlapDetectingSocket:
@@ -22,6 +22,31 @@ class OverlapDetectingSocket:
 
 
 class NetworkSendingTests(unittest.TestCase):
+    def test_oversized_local_message_is_rejected_without_disconnect(self):
+        class Socket:
+            def __init__(self):
+                self.sent = []
+
+            def sendall(self, data):
+                self.sent.append(data)
+
+        node = NetworkNode()
+        node.connected = True
+        node.authenticated = True
+        node.sock = Socket()
+        original_socket = node.sock
+
+        with self.assertLogs("app.network", level="ERROR"):
+            self.assertFalse(node.send_message({
+                "type": "clipboard_sync",
+                "text": "x" * (MAX_MESSAGE_SIZE + 1),
+            }))
+
+        self.assertTrue(node.connected)
+        self.assertTrue(node.authenticated)
+        self.assertIs(node.sock, original_socket)
+        self.assertEqual(original_socket.sent, [])
+
     def test_concurrent_tls_messages_are_serialized(self):
         node = NetworkNode()
         node.connected = True

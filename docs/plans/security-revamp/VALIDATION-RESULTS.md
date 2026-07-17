@@ -11,10 +11,12 @@ Tested commit: `4b831fa`
 
 | Role | Windows | IPv4 | Connection | Adapter | Reported rates | Signal |
 |---|---|---|---|---|---|---|
-| Server | Redacted Windows environment | 192.0.2.10 | 5 GHz 802.11ac Wi-Fi | Redacted adapter | Redacted rates | 99% |
-| Client | Redacted Windows environment | 192.0.2.11 | 5 GHz 802.11ac Wi-Fi | Redacted adapter | Redacted rates | 82% |
+| Server | Redacted | Redacted | Wi-Fi | Redacted | Redacted | Redacted |
+| Client | Redacted | Redacted | Wi-Fi | Redacted | Redacted | Redacted |
 
-The historical network baseline was redacted.
+The historical network baseline was removed because it identified the tester's
+private environment. Future results must use role labels instead of addresses
+and omit hardware identifiers.
 
 ### Results
 

@@ -2,7 +2,11 @@ import base64
 import unittest
 import zlib
 
-from app.clipboard_handler import encode_clipboard_snapshot
+from app.clipboard_handler import (
+    ClipboardPayloadError,
+    decode_compressed_clipboard_value,
+    encode_clipboard_snapshot,
+)
 from app.client import DeskFlowClient
 from app.server import DeskFlowServer
 
@@ -26,6 +30,28 @@ class RecordingNetwork:
 
 
 class ClipboardEncodingTests(unittest.TestCase):
+    def test_compressed_clipboard_decode_enforces_plaintext_limit(self):
+        limit = 1024
+        encoded = base64.b64encode(zlib.compress(b"x" * (limit + 1))).decode("ascii")
+
+        with self.assertRaises(ClipboardPayloadError):
+            decode_compressed_clipboard_value(encoded, limit)
+
+    def test_compressed_clipboard_decode_rejects_trailing_or_invalid_data(self):
+        encoded = base64.b64encode(zlib.compress(b"safe") + b"trailing").decode("ascii")
+
+        with self.assertRaises(ClipboardPayloadError):
+            decode_compressed_clipboard_value(encoded, 1024)
+        with self.assertRaises(ClipboardPayloadError):
+            decode_compressed_clipboard_value("not valid base64!", 1024)
+
+    def test_compressed_clipboard_decode_accepts_bounded_payload(self):
+        encoded = base64.b64encode(zlib.compress(b"safe")).decode("ascii")
+
+        self.assertEqual(
+            decode_compressed_clipboard_value(encoded, 4), b"safe"
+        )
+
     def test_encode_snapshot_preserves_rich_clipboard_wire_schema(self):
         snapshot = {
             "text": "hello",

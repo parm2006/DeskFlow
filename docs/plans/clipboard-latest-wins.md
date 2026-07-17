@@ -2,7 +2,7 @@
 
 > **Executor instructions**: Follow this plan step by step. Run every verification command and confirm the expected result before moving on. If a STOP condition occurs, stop and write a handback rather than improvising.
 >
-> **Drift check (run first)**: `git -c safe.directory='<REPOSITORY_ROOT>' diff 8799e09 -- app/clipboard_handler.py app/client.py app/server.py app/latest_wins_sender.py tests/test_latest_wins_sender.py tests/test_clipboard_scheduling.py docs/superpowers/specs/2026-07-11-clipboard-reliability-phase-1-design.md`
+> **Drift check (run first)**: `git diff 8799e09 -- app/clipboard_handler.py app/client.py app/server.py app/latest_wins_sender.py tests/test_latest_wins_sender.py tests/test_clipboard_scheduling.py docs/superpowers/specs/2026-07-11-clipboard-reliability-phase-1-design.md`
 
 ## Status
 

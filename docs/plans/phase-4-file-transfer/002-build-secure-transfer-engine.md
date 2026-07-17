@@ -2,7 +2,7 @@
 
 > Follow every verification gate. Do not integrate keyboard interception or Explorer paste in this plan.
 >
-> **Drift check**: `git -c safe.directory='<REPOSITORY_ROOT>' diff d352936 -- app/network.py app/crypto.py app/file_transfer tests requirements.txt`
+> **Drift check**: `git diff d352936 -- app/network.py app/crypto.py app/file_transfer tests requirements.txt`
 
 ## Status
 
