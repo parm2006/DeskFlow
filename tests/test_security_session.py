@@ -33,6 +33,29 @@ class SessionCoordinatorTests(unittest.TestCase):
         with self.assertRaises(SessionAuthenticationError):
             coordinator.consume_lane(fresh.data_token, "data", "another-session")
 
+    def test_wrong_peer_cannot_consume_the_rightful_peers_token(self):
+        coordinator = SessionCoordinator("secret")
+        session = coordinator.authenticate_control(
+            "secret", peer_address="192.0.2.10"
+        )
+
+        with self.assertRaises(SessionAuthenticationError):
+            coordinator.consume_lane(
+                session.data_token,
+                "data",
+                session.session_id,
+                peer_address="192.0.2.11",
+            )
+
+        self.assertTrue(
+            coordinator.consume_lane(
+                session.data_token,
+                "data",
+                session.session_id,
+                peer_address="192.0.2.10",
+            )
+        )
+
 
 class PendingPeerTrustTests(unittest.TestCase):
     def test_trust_commits_only_after_approval_authentication_and_lane_binding(self):

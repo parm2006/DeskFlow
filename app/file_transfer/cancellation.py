@@ -4,6 +4,8 @@ import threading
 import uuid
 from collections import OrderedDict
 
+from .validation import ValidationError, validate_transfer_id
+
 
 class TransferCancellation:
     def __init__(self, lane, controller, receiver, tombstone_limit=256):
@@ -20,7 +22,9 @@ class TransferCancellation:
         lane.register_callback("disconnected", self._on_disconnected)
 
     def request(self, job_id):
-        if not isinstance(job_id, str) or not job_id:
+        try:
+            validate_transfer_id(job_id)
+        except ValidationError:
             return False
         with self._lock:
             if job_id in self._outbound or job_id in self._finished:
@@ -38,7 +42,10 @@ class TransferCancellation:
     def _on_cancel_job(self, metadata, payload):
         job_id = metadata.get("job_id")
         cancellation_id = metadata.get("cancellation_id")
-        if not isinstance(job_id, str) or not isinstance(cancellation_id, str):
+        try:
+            validate_transfer_id(job_id)
+            validate_transfer_id(cancellation_id, "cancellation ID")
+        except ValidationError:
             return False
         key = (job_id, cancellation_id)
         with self._lock:
@@ -62,6 +69,11 @@ class TransferCancellation:
     def _on_cancel_ack(self, metadata, payload):
         job_id = metadata.get("job_id")
         cancellation_id = metadata.get("cancellation_id")
+        try:
+            validate_transfer_id(job_id)
+            validate_transfer_id(cancellation_id, "cancellation ID")
+        except ValidationError:
+            return False
         with self._lock:
             if self._outbound.get(job_id) != cancellation_id:
                 return False

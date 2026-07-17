@@ -1,12 +1,14 @@
 import struct
 import unittest
 import hashlib
+import socket
 import ssl
 import threading
 
 from app.crypto import IdentityStore
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.sender import TransferSender
@@ -117,6 +119,37 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(AuthenticationError):
             authenticate_server_connection(wrong, authenticator, "expected")
 
+    def test_file_lane_rejects_wrong_peer_without_consuming_token(self):
+        coordinator = SessionCoordinator("secret")
+        offer = coordinator.authenticate_control(
+            "secret", peer_address="192.0.2.10"
+        )
+        frame = encode_frame({
+            "type": "authenticate",
+            "token": offer.file_token,
+            "session_id": offer.session_id,
+        })
+
+        with self.assertRaises(AuthenticationError):
+            authenticate_server_connection(
+                FragmentedSocket(frame),
+                coordinator,
+                offer.session_id,
+                peer_address="192.0.2.11",
+            )
+
+        rightful = FragmentedSocket(frame)
+        authenticate_server_connection(
+            rightful,
+            coordinator,
+            offer.session_id,
+            peer_address="192.0.2.10",
+        )
+        self.assertEqual(
+            read_frame(FragmentedSocket(rightful.sent))[0]["type"],
+            "authenticated",
+        )
+
     def test_client_requires_file_lane_to_match_control_certificate(self):
         reply = encode_frame({"type": "authenticated"})
         expected = hashlib.sha256(b"file peer certificate").hexdigest()
@@ -148,6 +181,60 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(received, [({"type": "status", "job_id": "safe"}, b"ok")])
         finally:
             client.close()
+            server.stop()
+
+    def test_tls_file_server_rejects_another_source_without_consuming_token(self):
+        coordinator = SessionCoordinator("secret")
+        offer = coordinator.authenticate_control(
+            "secret", peer_address="127.0.0.1"
+        )
+        server = FileLaneServer(
+            identity=self.identity,
+            host="127.0.0.1",
+            port=0,
+            coordinator=coordinator,
+        )
+        server.offer_session(offer.file_token, offer.session_id)
+        self.assertTrue(server.start())
+        with self.identity.cert_path.open(encoding="ascii") as certificate_file:
+            fingerprint = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(certificate_file.read())
+            ).hexdigest()
+
+        def connect_from_other_peer(address, timeout):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.bind(("127.0.0.2", 0))
+            sock.connect(address)
+            return sock
+
+        wrong = FileLaneClient()
+        rightful = FileLaneClient()
+        try:
+            with patch(
+                "app.file_transfer.transport.socket.create_connection",
+                side_effect=connect_from_other_peer,
+            ):
+                with self.assertRaises(FrameError):
+                    wrong.connect(
+                        "127.0.0.1",
+                        server.port,
+                        fingerprint,
+                        offer.file_token,
+                        session_id=offer.session_id,
+                    )
+
+            rightful.connect(
+                "127.0.0.1",
+                server.port,
+                fingerprint,
+                offer.file_token,
+                session_id=offer.session_id,
+            )
+            self.assertIsNotNone(rightful.sock)
+        finally:
+            wrong.close()
+            rightful.close()
             server.stop()
 
     def test_tls_lane_transfers_file_with_end_to_end_hash_verification(self):

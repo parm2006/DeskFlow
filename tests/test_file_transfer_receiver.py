@@ -9,10 +9,75 @@ from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.receiver import TransferAbortedError
 from app.file_transfer.controller import TransferController
+from app.file_transfer.compression import MAX_CHUNK_SIZE
 from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_active_manifest_count_is_bounded_and_cancel_releases_capacity(self):
+        item = FileItem(
+            "empty.bin", ItemType.FILE, 0, 1, hashlib.sha256(b"").hexdigest()
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            manifests = [Manifest.create([item]) for _ in range(9)]
+            for manifest in manifests[:8]:
+                receiver.accept_manifest(manifest.to_wire())
+
+            with self.assertRaisesRegex(ValueError, "active transfer limit"):
+                receiver.accept_manifest(manifests[8].to_wire())
+
+            receiver.cancel_job(manifests[0].job_id)
+            self.assertIsNotNone(receiver.accept_manifest(manifests[8].to_wire()))
+
+    def test_rejects_zero_or_fragmented_production_chunks_without_staging(self):
+        size = MAX_CHUNK_SIZE + 1
+        item = FileItem("large.bin", ItemType.FILE, size, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        metadata = {
+            "job_id": manifest.job_id,
+            "relative_path": item.relative_path,
+            "offset": 0,
+            "compressed": False,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receiver = TransferReceiver(root)
+            receiver.accept_manifest(manifest.to_wire())
+
+            try:
+                with self.assertRaisesRegex(ValueError, "production chunk size"):
+                    receiver.accept_chunk({**metadata, "original_size": 0}, b"")
+                with self.assertRaisesRegex(ValueError, "production chunk size"):
+                    receiver.accept_chunk({**metadata, "original_size": 1}, b"x")
+                with self.assertRaisesRegex(ValueError, "offset"):
+                    receiver.accept_chunk(
+                        {
+                            **metadata,
+                            "offset": size - 1,
+                            "original_size": 1,
+                        },
+                        b"x",
+                    )
+
+                self.assertFalse(list(root.rglob("*.partial")))
+            finally:
+                receiver.cancel_job(manifest.job_id)
+
+    def test_empty_file_completes_without_a_content_chunk(self):
+        item = FileItem(
+            "empty.bin", ItemType.FILE, 0, 1, hashlib.sha256(b"").hexdigest()
+        )
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+
+            completed = receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.complete_job(manifest.job_id)
+
+            self.assertEqual(completed.read_available(0, 1), b"")
+
     def test_paste_failure_is_terminal_and_wakes_waiting_streams(self):
         item = FileItem("blocked.bin", ItemType.FILE, 4, 1, "0" * 64)
         manifest = Manifest.create([item])
@@ -255,6 +320,10 @@ class TransferReceiverTests(unittest.TestCase):
 
             receiver.record_performed_drop(manifest.job_id)
 
+            self.assertNotIn(manifest.job_id, receiver._jobs)
+            with self.assertRaises(TransferAbortedError):
+                receiver.read_range(manifest.job_id, item.relative_path, 0, 1)
+
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
 
     def test_manifest_chunks_and_completion_publish_verified_file(self):
@@ -344,6 +413,7 @@ class TransferReceiverTests(unittest.TestCase):
 
             self.assertFalse(reader.is_alive())
             self.assertIsInstance(errors[0], TransferAbortedError)
+            self.assertNotIn(manifest.job_id, receiver._jobs)
 
     def test_cancel_prevents_reads_from_already_completed_file(self):
         content = b"completed before cancel"
@@ -361,6 +431,27 @@ class TransferReceiverTests(unittest.TestCase):
 
             with self.assertRaises(TransferAbortedError):
                 receiver.read_range(manifest.job_id, item.relative_path, 0, len(content))
+
+            self.assertNotIn(manifest.job_id, receiver._jobs)
+
+    def test_failure_and_disconnect_release_job_keys_but_keep_bounded_errors(self):
+        item = FileItem("blocked.bin", ItemType.FILE, 4, 1, "0" * 64)
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            failed = Manifest.create([item])
+            disconnected = Manifest.create([item])
+            receiver.accept_manifest(failed.to_wire())
+            receiver.accept_manifest(disconnected.to_wire())
+
+            receiver.fail_paste(failed.job_id, "ExplorerStartTimeout")
+            receiver.cancel_all("file lane disconnected")
+
+            self.assertEqual(receiver._jobs, {})
+            with self.assertRaisesRegex(TransferAbortedError, "Explorer"):
+                receiver.read_range(failed.job_id, item.relative_path, 0, 1)
+            with self.assertRaisesRegex(TransferAbortedError, "disconnected"):
+                receiver.read_range(disconnected.job_id, item.relative_path, 0, 1)
+            self.assertLessEqual(len(receiver._terminal_jobs), receiver._terminal_limit)
 
     def test_same_relative_path_completes_independently_in_two_jobs(self):
         content = b"same file"

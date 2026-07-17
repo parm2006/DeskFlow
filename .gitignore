@@ -10,3 +10,8 @@ build/
 dist/
 *.spec
 handoffs/
+
+# Local development and agent planning artifacts
+docs/
+features.md
+plan.md

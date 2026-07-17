@@ -10,6 +10,7 @@ from app.crypto import IdentityStore
 from app.network import (
     ConnectionPhase, IncorrectPassword, NetworkClient, NetworkNode,
     NetworkServer, PairingTimeout, PeerIdentityChanged, ServerUnavailable,
+    _tls_client_context,
 )
 from app.session import SessionCoordinator
 from app.trust import PeerTrustStore
@@ -37,6 +38,16 @@ class FakeSocket:
 
 
 class NetworkGenerationTests(unittest.TestCase):
+    def test_pinned_tls_context_does_not_load_the_windows_ca_store(self):
+        with patch(
+            "app.network.ssl.create_default_context",
+            side_effect=AssertionError("system trust store must not be loaded"),
+        ):
+            context = _tls_client_context()
+
+        self.assertFalse(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_NONE)
+
     def test_stale_receive_loop_cannot_disconnect_replacement_socket(self):
         node = NetworkNode()
         first = FakeSocket()
@@ -270,6 +281,82 @@ class SecureControlConnectionTests(unittest.TestCase):
             )
         finally:
             repaired.disconnect()
+
+    def test_data_lane_rejects_another_source_without_consuming_token(self):
+        data_server = NetworkServer(
+            "secret",
+            "127.0.0.1",
+            0,
+            role="data",
+            coordinator=self.coordinator,
+            identity=self.identity,
+        )
+        self.assertTrue(data_server.start())
+        control_client, control_result = self.connect()
+        wrong_client = None
+        rightful_client = None
+        try:
+            self.assertEqual(control_result, (True, None))
+            session = control_client.session_info
+            fingerprint = control_client.peer_certificate_fingerprint()
+
+            def connect_from_other_peer(address, timeout):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                sock.bind(("127.0.0.2", 0))
+                sock.connect(address)
+                return sock
+
+            wrong_client = NetworkClient(
+                "unused",
+                role="data",
+                expected_fingerprint=fingerprint,
+                lane_token=session["data_token"],
+                session_id=session["session_id"],
+            )
+            with patch(
+                "app.network.socket.create_connection",
+                side_effect=connect_from_other_peer,
+            ):
+                wrong_result = []
+                wrong_finished = threading.Event()
+                wrong_client.connect(
+                    "127.0.0.1",
+                    data_server.port,
+                    lambda success, error: (
+                        wrong_result.append((success, error)),
+                        wrong_finished.set(),
+                    ),
+                )
+                self.assertTrue(wrong_finished.wait(3))
+            self.assertFalse(wrong_result[0][0])
+
+            rightful_client = NetworkClient(
+                "unused",
+                role="data",
+                expected_fingerprint=fingerprint,
+                lane_token=session["data_token"],
+                session_id=session["session_id"],
+            )
+            rightful_finished = threading.Event()
+            rightful_result = []
+            rightful_client.connect(
+                "127.0.0.1",
+                data_server.port,
+                lambda success, error: (
+                    rightful_result.append((success, error)),
+                    rightful_finished.set(),
+                ),
+            )
+            self.assertTrue(rightful_finished.wait(3))
+            self.assertEqual(rightful_result, [(True, None)])
+        finally:
+            if rightful_client is not None:
+                rightful_client.disconnect()
+            if wrong_client is not None:
+                wrong_client.disconnect()
+            control_client.disconnect()
+            data_server.stop()
 
 
 if __name__ == "__main__":

@@ -94,7 +94,9 @@ class ConnectionPhase(str, Enum):
 
 
 def _tls_client_context():
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    # DeskFlow authenticates its self-signed peer with an explicit certificate
+    # fingerprint, so loading the platform CA store is unnecessary.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -375,7 +377,9 @@ class NetworkServer(NetworkNode):
                 if self.role == "control":
                     if request.get("type") != "auth":
                         raise SessionAuthenticationError("control authentication is required")
-                    offer = self.coordinator.authenticate_control(request.get("password"))
+                    offer = self.coordinator.authenticate_control(
+                        request.get("password"), peer_address=address[0]
+                    )
                     response = {
                         "type": "auth_success",
                         "session_id": offer.session_id,
@@ -388,7 +392,12 @@ class NetworkServer(NetworkNode):
                     if request.get("type") != "lane_auth":
                         raise SessionAuthenticationError("lane authentication is required")
                     session_id = request.get("session_id")
-                    self.coordinator.consume_lane(request.get("token"), "data", session_id)
+                    self.coordinator.consume_lane(
+                        request.get("token"),
+                        "data",
+                        session_id,
+                        peer_address=address[0],
+                    )
                     response = {"type": "auth_success", "session_id": session_id}
                 _write_message(secure, response)
                 secure.settimeout(None)

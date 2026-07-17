@@ -26,9 +26,20 @@ class RelativePathValidationTests(unittest.TestCase):
 
 
 class ManifestValidationTests(unittest.TestCase):
+    def test_rejects_job_ids_outside_the_generated_32_lowercase_hex_format(self):
+        item = FileItem("safe.txt", ItemType.FILE, 1, 1, "0" * 64)
+        invalid_ids = ("", "a" * 31, "a" * 33, "A" * 32, "g" * 32)
+
+        for job_id in invalid_ids:
+            manifest = Manifest(job_id, (item,), total_size=1, file_count=1)
+            with self.subTest(job_id=job_id), self.assertRaisesRegex(
+                ValidationError, "job ID"
+            ):
+                validate_manifest(manifest)
+
     def test_rejects_sender_supplied_totals_that_do_not_match_items(self):
         item = FileItem("safe.txt", ItemType.FILE, 4, 123, "0" * 64)
-        manifest = Manifest("job", (item,), total_size=5, file_count=1)
+        manifest = Manifest("a" * 32, (item,), total_size=5, file_count=1)
 
         with self.assertRaisesRegex(ValidationError, "total size"):
             validate_manifest(manifest)

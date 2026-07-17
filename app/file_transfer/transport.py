@@ -6,7 +6,9 @@ import threading
 import logging
 
 from app.crypto import load_identity
+from app.network import _tls_client_context
 from app.safe_errors import error_name
+from app.session import SessionAuthenticationError
 
 from .protocol import (
     MAX_METADATA_SIZE,
@@ -47,16 +49,24 @@ def send_frame(sock, metadata, payload=b""):
     sock.sendall(encode_frame(metadata, payload))
 
 
-def authenticate_server_connection(sock, authenticator, expected_session_id=None):
+def authenticate_server_connection(
+    sock, authenticator, expected_session_id=None, peer_address=None
+):
     metadata, payload = read_frame(sock)
     if payload or metadata.get("type") != "authenticate":
         raise FrameError("file lane must authenticate before sending data")
     if expected_session_id is not None and metadata.get("session_id") != expected_session_id:
         raise AuthenticationError("file lane belongs to another session")
     if hasattr(authenticator, "consume_lane"):
-        authenticator.consume_lane(
-            metadata.get("token"), "file", metadata.get("session_id")
-        )
+        try:
+            authenticator.consume_lane(
+                metadata.get("token"),
+                "file",
+                metadata.get("session_id"),
+                peer_address=peer_address,
+            )
+        except SessionAuthenticationError as error:
+            raise AuthenticationError("file lane authentication failed") from error
     else:
         authenticator.authenticate(metadata.get("token"))
     send_frame(sock, {"type": "authenticated", "session_id": expected_session_id})
@@ -163,10 +173,7 @@ class FileLaneClient(_FileLane):
     def connect(self, host, port, expected_fingerprint, token, session_id=None, timeout=3):
         raw_sock = socket.create_connection((host, port), timeout=timeout)
         secure_sock = None
-        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = _tls_client_context()
         try:
             raw_sock.settimeout(timeout)
             secure_sock = context.wrap_socket(raw_sock, server_hostname=host)
@@ -270,7 +277,7 @@ class FileLaneServer(_FileLane):
     def _accept_loop(self):
         while self._running:
             try:
-                raw_sock, _ = self._server_sock.accept()
+                raw_sock, address = self._server_sock.accept()
             except socket.timeout:
                 continue
             except OSError:
@@ -282,19 +289,19 @@ class FileLaneServer(_FileLane):
                 self._candidate_sockets.add(raw_sock)
             threading.Thread(
                 target=self._candidate_worker,
-                args=(raw_sock, self._server_generation),
+                args=(raw_sock, address, self._server_generation),
                 daemon=True,
             ).start()
 
-    def _candidate_worker(self, raw_sock, server_generation):
+    def _candidate_worker(self, raw_sock, address, server_generation):
         try:
-            self._handle_candidate(raw_sock, server_generation)
+            self._handle_candidate(raw_sock, address, server_generation)
         finally:
             with self._candidate_lock:
                 self._candidate_sockets.discard(raw_sock)
             self._candidate_slots.release()
 
-    def _handle_candidate(self, raw_sock, server_generation=None):
+    def _handle_candidate(self, raw_sock, address, server_generation=None):
         secure_sock = None
         try:
             raw_sock.settimeout(self.handshake_timeout)
@@ -317,6 +324,7 @@ class FileLaneServer(_FileLane):
                 secure_sock,
                 authenticator,
                 expected_session_id=expected_session_id,
+                peer_address=address[0],
             )
             with self._auth_lock:
                 if (

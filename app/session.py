@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import hashlib
 import hmac
+import ipaddress
 import secrets
 import threading
 import time
@@ -29,28 +30,33 @@ class SessionCoordinator:
         self._active_session = None
         self._lock = threading.Lock()
 
-    def authenticate_control(self, candidate):
+    def authenticate_control(self, candidate, peer_address=None):
         if not isinstance(candidate, str) or not hmac.compare_digest(
             candidate.encode("utf-8"), self._password.encode("utf-8")
         ):
             raise SessionAuthenticationError("authentication failed")
+        peer_address = self._normalize_peer_address(peer_address)
         with self._lock:
             self._tokens.clear()
             session_id = uuid.uuid4().hex
             self._active_session = session_id
-            data = self._issue_locked(session_id, "data")
-            file_token = self._issue_locked(session_id, "file")
+            data = self._issue_locked(session_id, "data", peer_address)
+            file_token = self._issue_locked(session_id, "file", peer_address)
             return SessionOffer(session_id, data, file_token)
 
-    def consume_lane(self, token, purpose, session_id):
+    def consume_lane(self, token, purpose, session_id, peer_address=None):
         if not isinstance(token, str) or not isinstance(session_id, str):
             raise SessionAuthenticationError("lane token is invalid")
+        peer_address = self._normalize_peer_address(peer_address)
         digest = hashlib.sha256(token.encode("utf-8")).digest()
         with self._lock:
-            record = self._tokens.pop(digest, None)
+            record = self._tokens.get(digest)
             if record is None:
                 raise SessionAuthenticationError("lane token is invalid or already used")
-            expected_session, expected_purpose, expires = record
+            expected_session, expected_purpose, expires, expected_peer = record
+            if expected_peer is not None and peer_address != expected_peer:
+                raise SessionAuthenticationError("lane token belongs to another peer")
+            self._tokens.pop(digest, None)
             if self._clock() > expires:
                 raise SessionAuthenticationError("lane token expired")
             if expected_session != session_id or expected_purpose != purpose:
@@ -72,12 +78,22 @@ class SessionCoordinator:
         with self._lock:
             return self._active_session
 
-    def _issue_locked(self, session_id, purpose):
+    @staticmethod
+    def _normalize_peer_address(peer_address):
+        if peer_address is None:
+            return None
+        try:
+            return ipaddress.ip_address(str(peer_address)).compressed
+        except ValueError as error:
+            raise SessionAuthenticationError("peer address is invalid") from error
+
+    def _issue_locked(self, session_id, purpose, peer_address):
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode("utf-8")).digest()
         self._tokens[digest] = (
             session_id,
             purpose,
             self._clock() + self._token_ttl,
+            peer_address,
         )
         return token

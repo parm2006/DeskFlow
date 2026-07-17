@@ -1,7 +1,7 @@
 from collections import OrderedDict
 from .compression import encode_chunk, should_compress
 from .models import ItemType
-from .validation import validate_manifest
+from .validation import ValidationError, validate_manifest, validate_transfer_id
 from .status import TransferPhase
 from .controller import TransferCancelled
 import time
@@ -111,6 +111,10 @@ class TransferSender:
 
     def _on_paste_progress(self, metadata, payload):
         job_id = metadata.get("job_id")
+        try:
+            validate_transfer_id(job_id)
+        except ValidationError:
+            return False
         try:
             phase = TransferPhase(metadata.get("phase"))
         except (TypeError, ValueError):

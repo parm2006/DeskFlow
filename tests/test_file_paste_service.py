@@ -1,7 +1,13 @@
+import time
 import unittest
 
 from app.file_transfer.handshake import ManifestHandshakeQueue
 from app.file_transfer.paste_service import FilePasteService
+
+
+JOB_A = "a" * 32
+JOB_B = "b" * 32
+VALID_REQUEST = "1" * 32
 
 
 class RecordingControl:
@@ -83,12 +89,12 @@ class FilePasteServiceTests(unittest.TestCase):
 
         service.on_manifest_response({
             "request_id": pending.request_id,
-            "manifest": {"job_id": "A"},
+            "manifest": {"job_id": JOB_A},
         })
 
         self.assertEqual(
             events,
-            [("send", "file_manifest_request"), ("send", "file_manifest_ack"), ("publish", "A")],
+            [("send", "file_manifest_request"), ("send", "file_manifest_ack"), ("publish", JOB_A)],
         )
 
     def make_service(self, snapshots):
@@ -107,40 +113,78 @@ class FilePasteServiceTests(unittest.TestCase):
         return service, control, receiver, publisher, sender
 
     def test_source_does_not_snapshot_until_manifest_request_arrives(self):
-        snapshots = [(Manifest("A"), {"a.txt": object()})]
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
         service, control, _, _, _ = self.make_service(snapshots)
 
         self.assertEqual(len(snapshots), 1)
-        service.on_manifest_request({"request_id": "request-1"})
+        service.on_manifest_request({"request_id": VALID_REQUEST})
 
         self.assertEqual(snapshots, [])
         self.assertEqual(control.messages[0]["type"], "file_manifest_response")
-        self.assertEqual(control.messages[0]["request_id"], "request-1")
+        self.assertEqual(control.messages[0]["request_id"], VALID_REQUEST)
+
+    def test_invalid_request_id_is_rejected_before_snapshotting(self):
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
+        service, control, _, _, _ = self.make_service(snapshots)
+
+        self.assertFalse(service.on_manifest_request({"request_id": "not-valid"}))
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(control.messages, [])
+
+    def test_outgoing_snapshots_are_bounded_before_more_hashing_occurs(self):
+        snapshots = [
+            (Manifest(f"{number:032x}"), {f"{number}.txt": object()})
+            for number in range(9)
+        ]
+        service, control, _, _, _ = self.make_service(snapshots)
+
+        for number in range(8):
+            self.assertTrue(
+                service.on_manifest_request({"request_id": f"{number + 1:032x}"})
+            )
+        self.assertFalse(service.on_manifest_request({"request_id": "f" * 32}))
+
+        self.assertEqual(len(service._outgoing), 8)
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(control.messages[-1]["type"], "file_manifest_failed")
+
+    def test_unacknowledged_snapshot_expires_and_releases_sources(self):
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
+        service, _, _, _, _ = self.make_service(snapshots)
+        service._outgoing_timeout = 0.02
+        service.on_manifest_request({"request_id": VALID_REQUEST})
+
+        deadline = time.monotonic() + 1.0
+        while service._outgoing and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        self.assertEqual(service._outgoing, {})
 
     def test_destination_accepts_each_response_publishes_fifo_and_acknowledges(self):
         service, control, receiver, publisher, _ = self.make_service([])
         first = service.request_paste()
         second = service.request_paste()
 
-        service.on_manifest_response({"request_id": first.request_id, "manifest": {"job_id": "A"}})
-        service.on_manifest_response({"request_id": second.request_id, "manifest": {"job_id": "B"}})
+        service.on_manifest_response({"request_id": first.request_id, "manifest": {"job_id": JOB_A}})
+        service.on_manifest_response({"request_id": second.request_id, "manifest": {"job_id": JOB_B}})
 
-        self.assertEqual(publisher.jobs, ["A", "B"])
-        self.assertEqual(receiver.manifests, [{"job_id": "A"}, {"job_id": "B"}])
+        self.assertEqual(publisher.jobs, [JOB_A, JOB_B])
+        self.assertEqual(receiver.manifests, [{"job_id": JOB_A}, {"job_id": JOB_B}])
         self.assertEqual(
             [message["job_id"] for message in control.messages if message["type"] == "file_manifest_ack"],
-            ["A", "B"],
+            [JOB_A, JOB_B],
         )
 
     def test_source_starts_exact_snapshot_only_after_ack(self):
-        snapshots = [(Manifest("A"), {"a.txt": object()})]
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
         service, _, _, _, sender = self.make_service(snapshots)
-        service.on_manifest_request({"request_id": "request-1"})
+        service.on_manifest_request({"request_id": VALID_REQUEST})
         self.assertEqual(sender.jobs, [])
 
-        service.on_manifest_ack({"job_id": "A"})
+        service.on_manifest_ack({"job_id": JOB_A})
 
-        self.assertEqual(sender.jobs, [("A", ("a.txt",), False)])
+        self.assertEqual(sender.jobs, [(JOB_A, ("a.txt",), False)])
 
 
 if __name__ == "__main__":

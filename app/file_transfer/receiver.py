@@ -7,7 +7,7 @@ from collections import OrderedDict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.safe_errors import error_name
 
-from .compression import decode_chunk
+from .compression import MAX_CHUNK_SIZE, decode_chunk
 from .models import ItemType, Manifest
 from .staging import StagedFile, cleanup_staging_root
 from .validation import validate_manifest, validate_relative_path
@@ -16,6 +16,7 @@ from .range_coverage import RangeCoverage
 
 
 logger = logging.getLogger(__name__)
+MAX_ACTIVE_JOBS = 8
 
 class TransferAbortedError(OSError):
     winerror = 1223
@@ -34,8 +35,10 @@ class TransferReceiver:
         self.stream_close_grace = stream_close_grace
         self.lane = None
         self._jobs = {}
-        self._cancelled_jobs = OrderedDict()
-        self._cancelled_limit = 256
+        self._jobs_lock = threading.RLock()
+        self._terminal_jobs = OrderedDict()
+        self._terminal_limit = 256
+        self._terminal_lock = threading.Lock()
         self._progress_queue = queue.Queue()
         self._progress_worker = None
 
@@ -65,11 +68,14 @@ class TransferReceiver:
 
     def accept_manifest(self, wire_manifest):
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
-        if manifest.job_id in self._cancelled_jobs:
+        if self._terminal_reason(manifest.job_id) is not None:
             return None
-        if manifest.job_id in self._jobs:
-            raise ValueError("job ID is already active")
-        self._jobs[manifest.job_id] = {
+        with self._jobs_lock:
+            if manifest.job_id in self._jobs:
+                raise ValueError("job ID is already active")
+            if len(self._jobs) >= MAX_ACTIVE_JOBS:
+                raise ValueError("active transfer limit reached")
+            self._jobs[manifest.job_id] = {
             "manifest": manifest,
             "items": {item.relative_path: item for item in manifest.items},
             "staged": {},
@@ -93,16 +99,20 @@ class TransferReceiver:
             "last_progress_bytes": -1,
             "last_progress_time": 0.0,
             "staging_key": AESGCM.generate_key(bit_length=256),
-        }
+            }
         self._update_paste(manifest.job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
         return manifest
 
     def accept_chunk(self, metadata, payload):
         job_id = metadata["job_id"]
-        if job_id in self._cancelled_jobs:
+        if self._terminal_reason(job_id) is not None:
             return False
         relative_path = validate_relative_path(metadata["relative_path"])
-        job = self._jobs[job_id]
+        job = self._jobs.get(job_id)
+        if job is None:
+            if self._terminal_reason(job_id) is not None:
+                return False
+            raise KeyError(job_id)
         item = job["items"][relative_path]
         if item.item_type is not ItemType.FILE:
             raise ValueError("directories cannot receive content chunks")
@@ -111,10 +121,23 @@ class TransferReceiver:
             metadata.get("compressed") is True,
             metadata["original_size"],
         )
+        offset = metadata["offset"]
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("chunk offset must be a non-negative integer")
         with job["condition"]:
-            if job_id in self._cancelled_jobs or job["error"] is not None:
+            if self._terminal_reason(job_id) is not None or job["error"] is not None:
                 return False
             staged = job["staged"].get(relative_path)
+            expected_offset = 0 if staged is None else staged.received_size
+            if offset != expected_offset:
+                raise ValueError(
+                    f"chunk offset {offset} does not match expected offset {expected_offset}"
+                )
+            expected_chunk_size = min(MAX_CHUNK_SIZE, item.size - offset)
+            if expected_chunk_size <= 0 or len(decoded) != expected_chunk_size:
+                raise ValueError(
+                    "chunk does not match the expected production chunk size"
+                )
             if staged is None:
                 staged = StagedFile(
                     self.staging_root,
@@ -125,30 +148,51 @@ class TransferReceiver:
                     encryption_key=job["staging_key"],
                 )
                 job["staged"][relative_path] = staged
-            staged.write(metadata["offset"], decoded)
+            staged.write(offset, decoded)
             job["bytes_received"] += len(decoded)
             job["condition"].notify_all()
         return True
 
     def complete_file(self, job_id, relative_path):
-        if job_id in self._cancelled_jobs:
+        if self._terminal_reason(job_id) is not None:
             return False
         normalized = validate_relative_path(relative_path)
-        job = self._jobs[job_id]
-        with job["condition"]:
-            if job_id in self._cancelled_jobs or job["error"] is not None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            if self._terminal_reason(job_id) is not None:
                 return False
-            completed = job["staged"].pop(normalized).finalize()
+            raise KeyError(job_id)
+        with job["condition"]:
+            if self._terminal_reason(job_id) is not None or job["error"] is not None:
+                return False
+            staged = job["staged"].pop(normalized, None)
+            if staged is None:
+                item = job["items"][normalized]
+                if item.item_type is not ItemType.FILE or item.size != 0:
+                    raise ValueError("file completed before receiving content")
+                staged = StagedFile(
+                    self.staging_root,
+                    job_id,
+                    normalized,
+                    item.size,
+                    item.sha256,
+                    encryption_key=job["staging_key"],
+                )
+            completed = staged.finalize()
             job["completed"][normalized] = completed
             job["condition"].notify_all()
             return completed
 
     def complete_job(self, job_id):
-        if job_id in self._cancelled_jobs:
+        if self._terminal_reason(job_id) is not None:
             return False
-        job = self._jobs[job_id]
+        job = self._jobs.get(job_id)
+        if job is None:
+            if self._terminal_reason(job_id) is not None:
+                return False
+            raise KeyError(job_id)
         with job["condition"]:
-            if job_id in self._cancelled_jobs or job["error"] is not None:
+            if self._terminal_reason(job_id) is not None or job["error"] is not None:
                 return False
             expected_files = {
                 path for path, item in job["items"].items()
@@ -271,6 +315,8 @@ class TransferReceiver:
             })
         if cleanup_generation is not None:
             self._schedule_terminal_cleanup(job_id, cleanup_generation)
+        elif phase is TransferPhase.CANCELLED:
+            self.cancel_job(job_id)
         return True
 
     @staticmethod
@@ -316,7 +362,12 @@ class TransferReceiver:
 
     def read_range(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
-        job = self._jobs[job_id]
+        job = self._jobs.get(job_id)
+        if job is None:
+            reason = self._terminal_reason(job_id)
+            if reason is not None:
+                raise TransferAbortedError(reason)
+            raise KeyError(job_id)
         item = job["items"][normalized]
         if offset >= item.size:
             return b""
@@ -339,10 +390,10 @@ class TransferReceiver:
     def cancel_job(self, job_id):
         job = self._jobs.get(job_id)
         if job is None:
-            self._remember_cancelled(job_id)
+            self._remember_terminal(job_id, "transfer was cancelled")
             return False
         with job["condition"]:
-            self._remember_cancelled(job_id)
+            self._remember_terminal(job_id, "transfer was cancelled")
             for staged in job["staged"].values():
                 staged.abort()
             for completed in job["completed"].values():
@@ -353,6 +404,8 @@ class TransferReceiver:
             if self.controller is not None:
                 self.controller.cancel(job_id)
             job["condition"].notify_all()
+            if self._jobs.get(job_id) is job:
+                self._jobs.pop(job_id, None)
         return True
 
     def fail_paste(self, job_id, error_code):
@@ -393,19 +446,29 @@ class TransferReceiver:
                 "bytes_per_second": 0.0,
                 "error_code": error_code,
             })
+        self._remember_terminal(
+            job_id, "Windows Explorer did not accept the file paste"
+        )
+        if self._jobs.get(job_id) is job:
+            self._jobs.pop(job_id, None)
         return True
 
     def is_paste_terminal(self, job_id):
-        if job_id in self._cancelled_jobs:
+        if self._terminal_reason(job_id) is not None:
             return True
         status = self.controller.status(job_id) if self.controller is not None else None
         return status is not None and status.is_terminal
 
-    def _remember_cancelled(self, job_id):
-        self._cancelled_jobs[job_id] = None
-        self._cancelled_jobs.move_to_end(job_id)
-        while len(self._cancelled_jobs) > self._cancelled_limit:
-            self._cancelled_jobs.popitem(last=False)
+    def _terminal_reason(self, job_id):
+        with self._terminal_lock:
+            return self._terminal_jobs.get(job_id)
+
+    def _remember_terminal(self, job_id, reason):
+        with self._terminal_lock:
+            self._terminal_jobs[job_id] = reason
+            self._terminal_jobs.move_to_end(job_id)
+            while len(self._terminal_jobs) > self._terminal_limit:
+                self._terminal_jobs.popitem(last=False)
 
     def _update_paste(self, job_id, phase, bytes_done, speed):
         if self.controller is None:
@@ -459,8 +522,7 @@ class TransferReceiver:
         return sum(coverage.covered for coverage in job["coverage"].values())
 
     def cancel_all(self, reason):
-        for job_id in tuple(self._jobs):
-            job = self._jobs[job_id]
+        for job_id, job in tuple(self._jobs.items()):
             with job["condition"]:
                 for staged in job["staged"].values():
                     staged.abort()
@@ -470,6 +532,9 @@ class TransferReceiver:
                 job["completed"].clear()
                 job["error"] = reason
                 job["condition"].notify_all()
+                self._remember_terminal(job_id, reason)
+                if self._jobs.get(job_id) is job:
+                    self._jobs.pop(job_id, None)
 
 
 def _manifest_label(manifest):

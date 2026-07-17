@@ -9,6 +9,7 @@ MAX_PATH_LENGTH = 255
 MAX_PATH_DEPTH = 32
 MAX_FILE_SIZE = 1 << 40
 MAX_TOTAL_SIZE = 1 << 40
+TRANSFER_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
 _RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -19,6 +20,12 @@ _RESERVED_NAMES = {
 
 class ValidationError(ValueError):
     pass
+
+
+def validate_transfer_id(value, label="job ID"):
+    if not isinstance(value, str) or TRANSFER_ID_PATTERN.fullmatch(value) is None:
+        raise ValidationError(f"{label} must be 32 lowercase hexadecimal characters")
+    return value
 
 
 def validate_relative_path(value: str):
@@ -47,6 +54,7 @@ def validate_relative_path(value: str):
 
 
 def validate_manifest(manifest: Manifest):
+    validate_transfer_id(manifest.job_id)
     if not manifest.items:
         raise ValidationError("manifest must contain at least one item")
     if len(manifest.items) > MAX_FILE_COUNT:

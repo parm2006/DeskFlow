@@ -184,7 +184,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
 
 
 class FixedWindowConfigurationTests(unittest.TestCase):
-    def test_root_configuration_is_compact_fixed_and_non_maximizable(self):
+    def test_root_configuration_fits_action_buttons_and_remains_fixed(self):
         class Window:
             def __init__(self):
                 self.geometry_value = None
@@ -200,7 +200,7 @@ class FixedWindowConfigurationTests(unittest.TestCase):
 
         configure_main_window(window)
 
-        self.assertEqual(window.geometry_value, "400x560")
+        self.assertEqual(window.geometry_value, "400x600")
         self.assertEqual(window.resizable_value, (False, False))
 
     def test_saved_role_selects_the_matching_tab_and_invalid_values_do_nothing(self):

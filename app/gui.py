@@ -16,7 +16,7 @@ KNOWN_HOSTS_FILE = "known_hosts.json"
 
 
 def configure_main_window(window):
-    window.geometry("400x560")
+    window.geometry("400x600")
     window.resizable(False, False)
 
 
