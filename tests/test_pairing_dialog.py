@@ -340,6 +340,27 @@ class PairingDialogRuntimeTests(unittest.TestCase):
             if dialog is not None:
                 dialog.close()
 
+    def test_idle_window_manager_adjustment_is_recentered(self):
+        dialog = None
+        try:
+            decision = PairingDecision()
+            prompt = PairingPrompt.from_peer("ab" * 32, Peer())
+            dialog = PairingDialog(self.root, prompt, decision)
+
+            # Simulate Windows moving the newly decorated native window before
+            # Tk processes its first idle cycle.
+            dialog.window.geometry("520x360+0+0")
+            self.root.update()
+
+            modal_center_x = (
+                dialog.window.winfo_rootx() + dialog.window.winfo_width() // 2
+            )
+            root_center_x = self.root.winfo_rootx() + self.root.winfo_width() // 2
+            self.assertLessEqual(abs(modal_center_x - root_center_x), 12)
+        finally:
+            if dialog is not None:
+                dialog.close()
+
     def test_escape_and_title_bar_close_decline_and_release_the_grab(self):
         root = self.root
         for close_kind in ("escape", "title bar"):

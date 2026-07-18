@@ -149,6 +149,7 @@ class PairingDialog:
         self.window.update_idletasks()
         enable_dark_title_bar(self.window)
         self._center_over_root()
+        self.window.after_idle(self._center_over_root_if_open)
         self.window.grab_set()
         self.window.lift()
         self.window.focus_force()
@@ -167,6 +168,13 @@ class PairingDialog:
         x = max(0, min(x, screen_width - width))
         y = max(0, min(y, screen_height - height))
         self.window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _center_over_root_if_open(self):
+        try:
+            if self.window.winfo_exists():
+                self._center_over_root()
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _approve(self):
         self._finish(PairingOutcome.APPROVED)

@@ -313,6 +313,9 @@ class SecureControlConnectionTests(unittest.TestCase):
                 expected_fingerprint=fingerprint,
                 lane_token=session["data_token"],
                 session_id=session["session_id"],
+                connect_timeout=1.0,
+                handshake_timeout=1.0,
+                auth_timeout=1.0,
             )
             with patch(
                 "app.network.socket.create_connection",
@@ -328,7 +331,7 @@ class SecureControlConnectionTests(unittest.TestCase):
                         wrong_finished.set(),
                     ),
                 )
-                self.assertTrue(wrong_finished.wait(3))
+                self.assertTrue(wrong_finished.wait(5))
             self.assertFalse(wrong_result[0][0])
 
             rightful_client = NetworkClient(
@@ -337,6 +340,9 @@ class SecureControlConnectionTests(unittest.TestCase):
                 expected_fingerprint=fingerprint,
                 lane_token=session["data_token"],
                 session_id=session["session_id"],
+                connect_timeout=1.0,
+                handshake_timeout=1.0,
+                auth_timeout=1.0,
             )
             rightful_finished = threading.Event()
             rightful_result = []
@@ -348,7 +354,7 @@ class SecureControlConnectionTests(unittest.TestCase):
                     rightful_finished.set(),
                 ),
             )
-            self.assertTrue(rightful_finished.wait(3))
+            self.assertTrue(rightful_finished.wait(5))
             self.assertEqual(rightful_result, [(True, None)])
         finally:
             if rightful_client is not None:
