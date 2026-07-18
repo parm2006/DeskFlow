@@ -45,17 +45,44 @@ class PeerTrustStore:
             raise ValueError("peer record escaped its root")
         return path
 
+    def _legacy_path(self, peer):
+        legacy_name = f"{peer.host}.fingerprint"
+        if (
+            Path(legacy_name).name != legacy_name
+            or not re.fullmatch(r"[A-Za-z0-9._-]+\.fingerprint", legacy_name)
+        ):
+            return None
+        path = (self.root / legacy_name).resolve()
+        return path if path.parent == self.root else None
+
     def load(self, peer):
         path = self._path(peer)
         if not path.exists():
-            return None
+            return self._migrate_legacy(peer)
         decoded = self.protector.unprotect(path.read_bytes())
         record = json.loads(decoded.decode("utf-8"))
         if record.get("peer") != peer.canonical:
             raise ValueError("peer trust record identity does not match")
         fingerprint = record.get("fingerprint")
         self._validate_fingerprint(fingerprint)
+        legacy = self._legacy_path(peer)
+        if legacy is not None:
+            legacy.unlink(missing_ok=True)
         return fingerprint
+
+    def _migrate_legacy(self, peer):
+        legacy = self._legacy_path(peer)
+        if legacy is None or not legacy.is_file():
+            return None
+        try:
+            fingerprint = legacy.read_text(encoding="ascii").strip()
+            self._validate_fingerprint(fingerprint)
+            self.commit(peer, fingerprint)
+            return fingerprint.lower()
+        except (OSError, UnicodeError, ValueError):
+            return None
+        finally:
+            legacy.unlink(missing_ok=True)
 
     def commit(self, peer, fingerprint):
         self._validate_fingerprint(fingerprint)
@@ -80,6 +107,10 @@ class PeerTrustStore:
         path = self._path(peer)
         existed = path.exists()
         path.unlink(missing_ok=True)
+        legacy = self._legacy_path(peer)
+        if legacy is not None:
+            existed = legacy.exists() or existed
+            legacy.unlink(missing_ok=True)
         return existed
 
     @staticmethod

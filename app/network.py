@@ -318,7 +318,7 @@ class NetworkServer(NetworkNode):
             self._server_generation += 1
             self.accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
             self.accept_thread.start()
-            logger.info("%s server listening on %s:%s", self.role, self.host, self.port)
+            logger.info("%s server is listening", self.role.capitalize())
             return True
         except Exception as error:
             logger.error(
@@ -522,7 +522,7 @@ class NetworkClient(NetworkNode):
                             raise PairingRequired("first connection requires pairing approval")
                         if not self._request_pairing_approval(fingerprint, peer):
                             pending.decline()
-                            raise PairingDeclined("pairing was declined")
+                            raise PairingDeclined("Pairing was declined.")
                         pending.approve()
                         self._pending_trust = pending
                     request = {"type": "auth", "password": self.password}
@@ -596,7 +596,7 @@ class NetworkClient(NetworkNode):
 
         threading.Thread(target=approve, daemon=True).start()
         if not finished.wait(self.approval_timeout):
-            raise PairingTimeout("pairing approval timed out")
+            raise PairingTimeout("Pairing approval timed out. Try again.")
         if errors:
             raise errors[0]
         return result[0] if result else False

@@ -33,6 +33,30 @@ class PeerTrustStoreTests(unittest.TestCase):
 
             self.assertEqual(store.load(peer), "11" * 32)
 
+    def test_load_migrates_and_removes_legacy_address_named_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PeerTrustStore(root)
+            peer = store.peer_id("192.0.2.10", 5000)
+            legacy = root / "192.0.2.10.fingerprint"
+            legacy.write_text("ab" * 32, encoding="ascii")
+
+            self.assertEqual(store.load(peer), "ab" * 32)
+            self.assertFalse(legacy.exists())
+            self.assertTrue(store._path(peer).exists())
+
+    def test_load_discards_invalid_legacy_address_named_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PeerTrustStore(root)
+            peer = store.peer_id("192.0.2.11", 5000)
+            legacy = root / "192.0.2.11.fingerprint"
+            legacy.write_text("not-a-fingerprint", encoding="ascii")
+
+            self.assertIsNone(store.load(peer))
+            self.assertFalse(legacy.exists())
+            self.assertFalse(store._path(peer).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

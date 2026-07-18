@@ -2,6 +2,7 @@ import unittest
 
 from app.file_transfer.publisher import (
     VirtualPastePublisher, build_virtual_file_set, inject_paste_shortcut,
+    release_virtual_clipboard_owner,
 )
 
 
@@ -25,6 +26,33 @@ class RecordingReceiver:
 
 
 class VirtualPastePublisherTests(unittest.TestCase):
+    def test_release_clears_only_the_matching_current_clipboard_owner(self):
+        owner = object()
+        cleared = []
+
+        self.assertFalse(
+            release_virtual_clipboard_owner(
+                owner,
+                is_current=lambda candidate: False,
+                clear=lambda: cleared.append("cleared"),
+            )
+        )
+        self.assertEqual(cleared, [])
+
+        self.assertTrue(
+            release_virtual_clipboard_owner(
+                owner,
+                is_current=lambda candidate: candidate is owner,
+                clear=lambda: cleared.append("cleared"),
+            )
+        )
+        self.assertEqual(cleared, ["cleared"])
+
+    def test_default_explorer_acceptance_deadline_is_fifteen_seconds(self):
+        publisher = VirtualPastePublisher()
+
+        self.assertEqual(publisher.explorer_start_timeout, 15.0)
+
     @staticmethod
     def manifest(job_id):
         return {
@@ -80,6 +108,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         publisher = VirtualPastePublisher(
             publish=publish,
             inject=inject,
+            release=lambda owner: None,
             keyboard_factory=object,
             explorer_start_timeout=0.1,
         )
@@ -96,17 +125,22 @@ class VirtualPastePublisherTests(unittest.TestCase):
     def test_explorer_never_consumes_times_out_and_next_job_can_run(self):
         receiver = self.make_receiver()
         publish_count = 0
+        owners = []
+        released = []
 
         def publish(file_set, on_performed_drop=None):
             nonlocal publish_count
             publish_count += 1
             if publish_count == 2:
                 on_performed_drop()
-            return object()
+            owner = object()
+            owners.append(owner)
+            return owner
 
         publisher = VirtualPastePublisher(
             publish=publish,
             inject=lambda keyboard: None,
+            release=released.append,
             keyboard_factory=object,
             explorer_start_timeout=0.01,
         )
@@ -117,6 +151,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         self.assertTrue(publisher.wait_until_idle(1))
         self.assertEqual(receiver.failures, [("A", "ExplorerStartTimeout")])
         self.assertEqual(receiver.drops, ["B"])
+        self.assertEqual(released, [owners[0]])
         self.assertEqual(publisher.retained_owner_count, 1)
 
     def test_cancelled_wait_does_not_block_the_next_paste(self):
@@ -137,6 +172,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         publisher = VirtualPastePublisher(
             publish=publish,
             inject=inject,
+            release=lambda owner: None,
             keyboard_factory=object,
             explorer_start_timeout=0.5,
         )

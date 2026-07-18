@@ -3,7 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.gui import DeskFlowGUI, configure_main_window, restore_saved_role
+from app.gui import (
+    DeskFlowGUI, configure_main_window, restore_saved_role, write_status_message,
+)
 from app.preferences import UserPreferences
 
 
@@ -54,7 +56,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
         server_gui = DeskFlowGUI.__new__(DeskFlowGUI)
         server_gui.server_port_entry = Entry("not-a-port")
         server_gui.server_password_entry = Entry("secret")
-        server_gui._set_status = lambda message, color: statuses.append((message, color))
+        server_gui._set_status = lambda message, color, **kwargs: statuses.append((message, color))
 
         server_gui.start_server()
 
@@ -62,7 +64,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
         client_gui.client_ip_entry = Entry("192.0.2.1")
         client_gui.client_port_entry = Entry("70000")
         client_gui.client_password_entry = Entry("secret")
-        client_gui._set_status = lambda message, color: statuses.append((message, color))
+        client_gui._set_status = lambda message, color, **kwargs: statuses.append((message, color))
 
         client_gui.connect_client()
 
@@ -82,7 +84,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
         gui.preferences = type("Preferences", (), {"save_role": lambda self, role: roles.append(role)})()
         gui.client_connect_btn = Button()
         gui.client_disconnect_btn = Button()
-        gui._set_status = lambda message, color: None
+        gui._set_status = lambda message, color, **kwargs: None
         gui.save_known_host = lambda ip, port: None
 
         gui._handle_connect_result(source, False, "Incorrect password", "host", 5000)
@@ -106,7 +108,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
         )()
         gui.client_connect_btn = Button()
         gui.client_disconnect_btn = Button()
-        gui._set_status = lambda message, color: statuses.append((message, color))
+        gui._set_status = lambda message, color, **kwargs: statuses.append((message, color))
         gui.save_known_host = lambda ip, port: None
 
         with self.assertLogs("app.gui", level="ERROR") as logs:
@@ -158,7 +160,7 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
         gui._on_server_client_disconnected = lambda data: None
         gui.winfo_screenwidth = lambda: 1920
         gui.winfo_screenheight = lambda: 1080
-        gui._set_status = lambda message, color: statuses.append((message, color))
+        gui._set_status = lambda message, color, **kwargs: statuses.append((message, color))
         gui.server_start_btn = Button()
         gui.server_stop_btn = Button()
         gui.preferences = type("Preferences", (), {"save_role": lambda self, role: roles.append(role)})()
@@ -184,6 +186,35 @@ class SuccessfulRoleTimingTests(unittest.TestCase):
 
 
 class FixedWindowConfigurationTests(unittest.TestCase):
+    def test_pairing_code_segment_is_white_inside_colored_status(self):
+        class Textbox:
+            def __init__(self):
+                self.calls = []
+
+            def configure(self, **kwargs):
+                self.calls.append(("configure", kwargs))
+
+            def delete(self, start, end):
+                self.calls.append(("delete", start, end))
+
+            def insert(self, index, text, tags=None):
+                self.calls.append(("insert", text, tags))
+
+            def tag_config(self, name, **kwargs):
+                self.calls.append(("tag", name, kwargs))
+
+        textbox = Textbox()
+
+        write_status_message(
+            textbox,
+            "Status: Identity recovered\nPairing code: ABCD-1234",
+            "orange",
+            white_text="ABCD-1234",
+        )
+
+        self.assertIn(("tag", "pairing_code", {"foreground": "white"}), textbox.calls)
+        self.assertIn(("insert", "ABCD-1234", "pairing_code"), textbox.calls)
+
     def test_root_configuration_fits_action_buttons_and_remains_fixed(self):
         class Window:
             def __init__(self):

@@ -18,6 +18,17 @@ from app.safe_errors import error_name
 logger = logging.getLogger(__name__)
 
 
+def release_virtual_clipboard_owner(
+    owner,
+    is_current=pythoncom.OleIsCurrentClipboard,
+    clear=lambda: pythoncom.OleSetClipboard(None),
+):
+    if not is_current(owner):
+        return False
+    clear()
+    return True
+
+
 def inject_paste_shortcut(keyboard, ctrl_key=Key.ctrl, paste_key="v"):
     try:
         keyboard.press(ctrl_key)
@@ -67,13 +78,15 @@ class VirtualPastePublisher:
         self,
         publish=None,
         inject=None,
+        release=None,
         keyboard_factory=None,
-        explorer_start_timeout=10.0,
+        explorer_start_timeout=15.0,
     ):
         self._queue = queue.Queue()
         self._thread = None
         self._publish = publish or publish_virtual_files
         self._inject = inject or inject_paste_shortcut
+        self._release = release or release_virtual_clipboard_owner
         self._keyboard_factory = keyboard_factory or KeyboardController
         self.explorer_start_timeout = float(explorer_start_timeout)
         self._owner = None
@@ -149,22 +162,43 @@ class VirtualPastePublisher:
         owner = self._publish(file_set, on_performed_drop=performed_drop)
         with self._owner_lock:
             self._owner = owner
+        accepted = False
         try:
-            self._inject(keyboard)
-        except Exception as error:
-            self._report_failure(receiver, job_id, "PasteInjectionFailed")
-            logger.error("Could not inject file paste (%s)", error_name(error))
-            return False
+            try:
+                self._inject(keyboard)
+            except Exception as error:
+                self._report_failure(receiver, job_id, "PasteInjectionFailed")
+                logger.error("Could not inject file paste (%s)", error_name(error))
+                return False
 
-        deadline = time.monotonic() + self.explorer_start_timeout
-        while not consumed.is_set():
-            pythoncom.PumpWaitingMessages()
-            if receiver.is_paste_terminal(job_id):
+            deadline = time.monotonic() + self.explorer_start_timeout
+            while not consumed.is_set():
+                pythoncom.PumpWaitingMessages()
+                if receiver.is_paste_terminal(job_id):
+                    return False
+                if time.monotonic() >= deadline:
+                    self._report_failure(receiver, job_id, "ExplorerStartTimeout")
+                    return False
+                consumed.wait(0.005)
+            accepted = True
+            return True
+        finally:
+            if not accepted:
+                self._release_owner(owner)
+
+    def _release_owner(self, owner):
+        with self._owner_lock:
+            if self._owner is not owner:
                 return False
-            if time.monotonic() >= deadline:
-                self._report_failure(receiver, job_id, "ExplorerStartTimeout")
-                return False
-            consumed.wait(0.005)
+            try:
+                self._release(owner)
+            except Exception as error:
+                logger.error(
+                    "Could not release virtual clipboard ownership (%s)",
+                    error_name(error),
+                )
+            finally:
+                self._owner = None
         return True
 
     @staticmethod

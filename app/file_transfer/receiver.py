@@ -533,6 +533,11 @@ class TransferReceiver:
                 job["error"] = reason
                 job["condition"].notify_all()
                 self._remember_terminal(job_id, reason)
+                if self.controller is not None:
+                    status = self.controller.status(job_id)
+                    if status is not None and not status.is_terminal:
+                        self.controller.cancel(job_id)
+                        self.controller.confirm_cancelled(job_id)
                 if self._jobs.get(job_id) is job:
                     self._jobs.pop(job_id, None)
 

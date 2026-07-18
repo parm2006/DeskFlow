@@ -47,6 +47,22 @@ class TransferToastViewTests(unittest.TestCase):
                 status = TransferStatus("job", phase, "file.bin", 50, 100)
                 self.assertIsNotNone(toast_view(status).hide_after_ms)
 
+    def test_explorer_timeout_uses_safe_text_and_hides_after_three_seconds(self):
+        status = TransferStatus(
+            "job",
+            TransferPhase.FAILED,
+            "private-file-name.bin",
+            0,
+            100,
+            error_code="ExplorerStartTimeout",
+        )
+
+        view = toast_view(status)
+
+        self.assertEqual(view.details, "Windows Explorer did not accept the paste.")
+        self.assertEqual(view.hide_after_ms, 3000)
+        self.assertNotIn("private-file-name", view.details)
+
     def test_confirmed_cancellation_hides_immediately(self):
         status = TransferStatus("job", TransferPhase.CANCELLED, "file.bin", 50, 100)
         self.assertEqual(toast_view(status).hide_after_ms, 0)

@@ -43,6 +43,20 @@ def save_role_safely(preferences, role):
         logger.error("Could not save successful DeskFlow role (%s)", error_name(error))
         return False
 
+
+def write_status_message(widget, message, color="gray", white_text=None):
+    widget.configure(state="normal", text_color=color)
+    widget.delete("1.0", "end")
+    if white_text and white_text in message:
+        before, after = message.split(white_text, 1)
+        widget.insert("end", before)
+        widget.tag_config("pairing_code", foreground="white")
+        widget.insert("end", white_text, "pairing_code")
+        widget.insert("end", after)
+    else:
+        widget.insert("1.0", message)
+    widget.configure(state="disabled")
+
 class DeskFlowGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -241,6 +255,7 @@ class DeskFlowGUI(ctk.CTk):
             self._set_status(
                 f"Status: Server listening on port {port}\nPairing code: {code}{recovery}",
                 "orange" if self.server.identity.recovered else "green",
+                white_text=code,
             )
             self.server_start_btn.pack_forget()
             self.server_stop_btn.pack(pady=10)
@@ -333,11 +348,13 @@ class DeskFlowGUI(ctk.CTk):
             port = self.server_port_entry.get()
             self.after(0, lambda: self._set_status(f"Status: Server listening on port {port}", "green"))
 
-    def _set_status(self, message, color="gray"):
-        self.status_text.configure(state="normal", text_color=color)
-        self.status_text.delete("1.0", "end")
-        self.status_text.insert("1.0", message)
-        self.status_text.configure(state="disabled")
+    def _set_status(self, message, color="gray", white_text=None):
+        write_status_message(
+            self.status_text,
+            message,
+            color,
+            white_text=white_text,
+        )
 
     def _approve_fingerprint(self, fingerprint, peer):
         return self.pairing_approval.request(fingerprint, peer)

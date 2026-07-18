@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum, auto
+import ctypes
+import os
 import threading
 import tkinter as tk
 
@@ -7,6 +9,30 @@ import customtkinter as ctk
 
 from app.crypto import pairing_code_from_fingerprint
 from app.network import PairingTimeout
+
+
+PAIRING_CODE_COLOR = "white"
+
+
+def enable_dark_title_bar(window, dwmapi=None, user32=None):
+    if os.name != "nt" and (dwmapi is None or user32 is None):
+        return False
+    try:
+        dwmapi = dwmapi or ctypes.windll.dwmapi
+        user32 = user32 or ctypes.windll.user32
+        handle = user32.GetParent(window.winfo_id()) or window.winfo_id()
+        enabled = ctypes.c_int(1)
+        for attribute in (20, 19):
+            if dwmapi.DwmSetWindowAttribute(
+                handle,
+                attribute,
+                ctypes.byref(enabled),
+                ctypes.sizeof(enabled),
+            ) == 0:
+                return True
+    except (AttributeError, OSError, RuntimeError):
+        pass
+    return False
 
 
 class PairingOutcome(Enum):
@@ -95,6 +121,7 @@ class PairingDialog:
             self.window,
             text=prompt.code,
             font=ctk.CTkFont(size=28, weight="bold"),
+            text_color=PAIRING_CODE_COLOR,
         )
         self.code.grid(row=2, column=0, padx=20, pady=6, sticky="ew")
         self.details = ctk.CTkTextbox(self.window, wrap="word", height=115)
@@ -120,6 +147,7 @@ class PairingDialog:
 
         self.window.bind("<Configure>", self._resize_content, add="+")
         self.window.update_idletasks()
+        enable_dark_title_bar(self.window)
         self._center_over_root()
         self.window.grab_set()
         self.window.lift()
@@ -205,7 +233,7 @@ class PairingApprovalController:
             return False
         if outcome is PairingOutcome.TIMED_OUT:
             raise PairingTimeout(
-                "pairing approval timed out; connect again and compare the codes"
+                "Pairing approval timed out. Connect again and compare the codes."
             )
         raise PairingTimeout("pairing approval cancelled because DeskFlow closed")
 

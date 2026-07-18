@@ -37,12 +37,15 @@ def toast_view(status):
     hide_delays = {
         TransferPhase.COMPLETED: 3000,
         TransferPhase.CANCELLED: 0,
-        TransferPhase.FAILED: 8000,
+        TransferPhase.FAILED: 3000,
     }
     if status.phase is TransferPhase.WAITING_FOR_EXPLORER:
         details = "Choose any Windows file prompt to continue"
     elif status.phase is TransferPhase.FAILED:
-        details = "DeskFlow could not finish the network transfer."
+        if status.error_code == "ExplorerStartTimeout":
+            details = "Windows Explorer did not accept the paste."
+        else:
+            details = "DeskFlow could not finish the network transfer."
     elif status.phase is TransferPhase.COMPLETED:
         details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · Windows finished reading files"
     else:

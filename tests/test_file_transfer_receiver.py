@@ -453,6 +453,28 @@ class TransferReceiverTests(unittest.TestCase):
                 receiver.read_range(disconnected.job_id, item.relative_path, 0, 1)
             self.assertLessEqual(len(receiver._terminal_jobs), receiver._terminal_limit)
 
+    def test_disconnect_terminalizes_waiting_controller_status(self):
+        item = FileItem("waiting.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            controller = TransferController()
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+            controller.update(
+                manifest.job_id,
+                TransferPhase.WAITING_FOR_EXPLORER,
+                "waiting.bin",
+                0,
+                4,
+            )
+
+            receiver.cancel_all("file lane disconnected")
+
+            self.assertEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.CANCELLED,
+            )
+
     def test_same_relative_path_completes_independently_in_two_jobs(self):
         content = b"same file"
         item = FileItem("same.txt", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())

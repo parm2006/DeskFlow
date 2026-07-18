@@ -8,7 +8,7 @@ from app.gui import DeskFlowGUI
 from app.network import PairingTimeout
 from app.pairing_dialog import (
     PairingApprovalController, PairingDecision, PairingDialog, PairingOutcome,
-    PairingPrompt,
+    PairingPrompt, PAIRING_CODE_COLOR, enable_dark_title_bar,
 )
 
 
@@ -46,6 +46,9 @@ class PairingDecisionTests(unittest.TestCase):
 
 
 class PairingPromptTests(unittest.TestCase):
+    def test_comparison_code_is_always_white(self):
+        self.assertEqual(PAIRING_CODE_COLOR, "white")
+
     def test_prompt_contains_all_comparison_data_and_actions(self):
         fingerprint = "ab" * 32
 
@@ -57,6 +60,28 @@ class PairingPromptTests(unittest.TestCase):
         self.assertIn("identical", prompt.instruction.lower())
         self.assertEqual(prompt.approve_label, "Codes match")
         self.assertEqual(prompt.decline_label, "Decline")
+
+    def test_dark_title_bar_targets_the_native_top_level_window(self):
+        calls = []
+
+        class Window:
+            def winfo_id(self):
+                return 7
+
+        class User32:
+            def GetParent(self, handle):
+                self.handle = handle
+                return 9
+
+        class DwmApi:
+            def DwmSetWindowAttribute(self, handle, attribute, value, size):
+                calls.append((handle, attribute, size))
+                return 0
+
+        self.assertTrue(
+            enable_dark_title_bar(Window(), dwmapi=DwmApi(), user32=User32())
+        )
+        self.assertEqual(calls[0][0:2], (9, 20))
 
 
 class FakeRoot:

@@ -188,6 +188,8 @@ class ClipboardHandler:
         self.last_text_hash = self._get_hash(text)
         self.last_image_hash = self._get_hash(dib_data)
 
+        injected_sequence = None
+        clipboard_updated = False
         try:
             for _ in range(5):
                 try:
@@ -208,6 +210,7 @@ class ClipboardHandler:
                             win32clipboard.SetClipboardData(self.cf_rtf, rtf_data)
                             
                         logger.info("Injected rich clipboard payload (with formatting)")
+                        clipboard_updated = True
                         break
                     finally:
                         win32clipboard.CloseClipboard()
@@ -217,14 +220,24 @@ class ClipboardHandler:
                         error_name(error),
                     )
                     time.sleep(0.1)
+
+            if clipboard_updated:
+                try:
+                    injected_sequence = (
+                        win32clipboard.GetClipboardSequenceNumber()
+                    )
+                except Exception:
+                    pass
         finally:
-            # Let the OS settle, then fetch the updated sequence number
+            # Record only DeskFlow's write. A user copy made while Windows settles
+            # must remain visible to the polling thread as a newer sequence.
             time.sleep(0.1)
+            if injected_sequence is not None:
+                self.last_sequence_num = injected_sequence
             try:
-                self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
-            except:
-                pass
-            self.is_injecting = False
+                self._update_file_availability()
+            finally:
+                self.is_injecting = False
 
     def _read_clipboard(self):
         snapshot = {}

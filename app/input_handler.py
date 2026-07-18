@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 class WindowsSpecialKeyInjector:
+    KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
     VIRTUAL_KEYS = {"delete": 0x2E}
 
@@ -22,6 +23,13 @@ class WindowsSpecialKeyInjector:
 
     def release(self, name):
         return self._emit(name, self.KEYEVENTF_KEYUP)
+
+    def emit_native(self, virtual_key, scan_code, extended, pressed):
+        flags = self.KEYEVENTF_EXTENDEDKEY if extended else 0
+        if not pressed:
+            flags |= self.KEYEVENTF_KEYUP
+        self.user32.keybd_event(virtual_key, scan_code, flags, 0)
+        return True
 
     def _emit(self, name, flags):
         virtual_key = self.VIRTUAL_KEYS.get(name)
@@ -175,6 +183,21 @@ class InputHandler:
         self.trigger('key_release', self._serialize_key(key))
 
     def _serialize_key(self, key):
+        virtual_key = getattr(key, 'vk', None)
+        if type(virtual_key) is int and 0x60 <= virtual_key <= 0x6F:
+            scan_code = getattr(key, '_scan', 0)
+            if type(scan_code) is not int or not 0 <= scan_code <= 0xFF:
+                scan_code = 0
+            native_flags = getattr(key, '_flags', 0)
+            return {
+                'type': 'native_key',
+                'vk': virtual_key,
+                'scan': scan_code,
+                'extended': bool(
+                    type(native_flags) is int
+                    and native_flags & WindowsSpecialKeyInjector.KEYEVENTF_EXTENDEDKEY
+                ),
+            }
         if hasattr(key, 'char') and key.char is not None:
             return {'type': 'char', 'value': key.char}
         elif hasattr(key, 'name'):
@@ -214,6 +237,9 @@ class InputHandler:
         self.mouse.scroll(dx, dy)
 
     def inject_key_press(self, key_data):
+        if key_data and key_data.get('type') == 'native_key':
+            self._inject_native_key(key_data, pressed=True)
+            return
         if (
             key_data and key_data.get('type') == 'special'
             and self.special_key_injector is not None
@@ -225,6 +251,9 @@ class InputHandler:
             self.keyboard.press(key)
 
     def inject_key_release(self, key_data):
+        if key_data and key_data.get('type') == 'native_key':
+            self._inject_native_key(key_data, pressed=False)
+            return
         if (
             key_data and key_data.get('type') == 'special'
             and self.special_key_injector is not None
@@ -234,6 +263,27 @@ class InputHandler:
         key = self._deserialize_key(key_data)
         if key:
             self.keyboard.release(key)
+
+    def _inject_native_key(self, key_data, pressed):
+        virtual_key = key_data.get('vk')
+        scan_code = key_data.get('scan')
+        extended = key_data.get('extended')
+        if not (
+            type(virtual_key) is int
+            and 0x60 <= virtual_key <= 0x6F
+            and type(scan_code) is int
+            and 0 <= scan_code <= 0xFF
+            and isinstance(extended, bool)
+            and self.special_key_injector is not None
+            and hasattr(self.special_key_injector, 'emit_native')
+        ):
+            return False
+        return self.special_key_injector.emit_native(
+            virtual_key,
+            scan_code,
+            extended,
+            pressed,
+        )
 
     def _deserialize_key(self, key_data):
         if not key_data: return None
