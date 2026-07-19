@@ -83,6 +83,54 @@ class PairingPromptTests(unittest.TestCase):
         )
         self.assertEqual(calls[0][0:2], (9, 20))
 
+    def test_centering_repositions_without_rescaling_window_dimensions(self):
+        geometry_calls = []
+
+        class Root:
+            winfo_x = lambda self: 300
+            winfo_y = lambda self: 80
+            winfo_width = lambda self: 330
+            winfo_height = lambda self: 560
+
+        class Window:
+            winfo_width = lambda self: 650
+            winfo_reqwidth = lambda self: 650
+            winfo_height = lambda self: 450
+            winfo_reqheight = lambda self: 450
+            winfo_screenwidth = lambda self: 1920
+            winfo_screenheight = lambda self: 1080
+
+            def geometry(self, value):
+                geometry_calls.append(value)
+
+        dialog = PairingDialog.__new__(PairingDialog)
+        dialog.root = Root()
+        dialog.window = Window()
+
+        dialog._center_over_root()
+
+        self.assertEqual(geometry_calls, ["+140+135"])
+
+    def test_resizing_converts_physical_width_before_setting_wraplength(self):
+        configured = []
+
+        class Window:
+            def _get_window_scaling(self):
+                return 1.5
+
+        class Instruction:
+            def configure(self, **kwargs):
+                configured.append(kwargs)
+
+        dialog = PairingDialog.__new__(PairingDialog)
+        dialog.window = Window()
+        dialog.instruction = Instruction()
+        event = type("Event", (), {"widget": dialog.window, "width": 540})()
+
+        dialog._resize_content(event)
+
+        self.assertEqual(configured, [{"wraplength": 320}])
+
 
 class FakeRoot:
     def __init__(self):

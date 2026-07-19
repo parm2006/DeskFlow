@@ -156,7 +156,11 @@ class PairingDialog:
 
     def _resize_content(self, event):
         if event.widget is self.window:
-            self.instruction.configure(wraplength=max(260, event.width - 40))
+            scaling = self.window._get_window_scaling()
+            logical_width = event.width / scaling
+            self.instruction.configure(
+                wraplength=max(260, round(logical_width - 40))
+            )
 
     def _center_over_root(self):
         width = max(self.window.winfo_width(), self.window.winfo_reqwidth())
@@ -167,7 +171,10 @@ class PairingDialog:
         screen_height = self.window.winfo_screenheight()
         x = max(0, min(x, screen_width - width))
         y = max(0, min(y, screen_height - height))
-        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        # CustomTkinter has already applied DPI scaling to the mapped window's
+        # dimensions. Reusing those dimensions in geometry() would scale them
+        # a second time; update only the physical screen position here.
+        self.window.geometry(f"+{x}+{y}")
 
     def _center_over_root_if_open(self):
         try:
