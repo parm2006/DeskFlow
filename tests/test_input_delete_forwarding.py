@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.input_handler import InputHandler, WindowsSpecialKeyInjector
 
@@ -6,9 +7,13 @@ from app.input_handler import InputHandler, WindowsSpecialKeyInjector
 class RecordingUser32:
     def __init__(self):
         self.events = []
+        self.key_states = {}
 
     def keybd_event(self, virtual_key, scan_code, flags, extra_info):
         self.events.append((virtual_key, scan_code, flags, extra_info))
+
+    def GetAsyncKeyState(self, virtual_key):
+        return self.key_states.get(virtual_key, 0)
 
 
 class RecordingKeyboard:
@@ -23,6 +28,32 @@ class RecordingKeyboard:
 
 
 class DeleteForwardingTests(unittest.TestCase):
+    def test_keyboard_capture_releases_local_modifiers_before_suppression(self):
+        events = []
+
+        class Injector:
+            def release_active_modifiers(self):
+                events.append("release_modifiers")
+
+        class Listener:
+            def __init__(self, **kwargs):
+                events.append(("listener", kwargs["suppress"]))
+
+            def start(self):
+                events.append("listener_started")
+
+        handler = InputHandler.__new__(InputHandler)
+        handler.keyboard_listener = None
+        handler.special_key_injector = Injector()
+
+        with patch("app.input_handler.KeyboardListener", Listener):
+            handler.start_keyboard_capture()
+
+        self.assertEqual(
+            events,
+            ["release_modifiers", ("listener", True), "listener_started"],
+        )
+
     def test_shutdown_releases_every_locally_injected_key(self):
         handler = InputHandler.__new__(InputHandler)
         handler.keyboard = RecordingKeyboard()
@@ -47,6 +78,26 @@ class DeleteForwardingTests(unittest.TestCase):
         self.assertEqual(
             user32.events,
             [(0x2E, 0, 0, 0), (0x2E, 0, 0x0002, 0)],
+        )
+
+    def test_windows_injector_releases_only_active_modifier_sides(self):
+        user32 = RecordingUser32()
+        user32.key_states = {0xA2: 0x8000, 0xA5: 0x8000}
+        injector = WindowsSpecialKeyInjector(user32)
+
+        injector.release_active_modifiers()
+
+        self.assertEqual(
+            user32.events,
+            [
+                (0xA2, 0, injector.KEYEVENTF_KEYUP, 0),
+                (
+                    0xA5,
+                    0,
+                    injector.KEYEVENTF_EXTENDEDKEY | injector.KEYEVENTF_KEYUP,
+                    0,
+                ),
+            ],
         )
 
     def test_input_handler_routes_delete_to_native_injector_only(self):

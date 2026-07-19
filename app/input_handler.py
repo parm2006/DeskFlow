@@ -12,6 +12,16 @@ class WindowsSpecialKeyInjector:
     KEYEVENTF_EXTENDEDKEY = 0x0001
     KEYEVENTF_KEYUP = 0x0002
     VIRTUAL_KEYS = {"delete": 0x2E}
+    MODIFIER_KEYS = (
+        (0xA0, False),  # Left Shift
+        (0xA1, False),  # Right Shift
+        (0xA2, False),  # Left Control
+        (0xA3, True),   # Right Control
+        (0xA4, False),  # Left Alt
+        (0xA5, True),   # Right Alt
+        (0x5B, True),   # Left Windows
+        (0x5C, True),   # Right Windows
+    )
 
     def __init__(self, user32=None):
         if user32 is None:
@@ -31,6 +41,15 @@ class WindowsSpecialKeyInjector:
             flags |= self.KEYEVENTF_KEYUP
         self.user32.keybd_event(virtual_key, scan_code, flags, 0)
         return True
+
+    def release_active_modifiers(self):
+        for virtual_key, extended in self.MODIFIER_KEYS:
+            if not self.user32.GetAsyncKeyState(virtual_key) & 0x8000:
+                continue
+            flags = self.KEYEVENTF_KEYUP
+            if extended:
+                flags |= self.KEYEVENTF_EXTENDEDKEY
+            self.user32.keybd_event(virtual_key, 0, flags, 0)
 
     def _emit(self, name, flags):
         virtual_key = self.VIRTUAL_KEYS.get(name)
@@ -126,6 +145,8 @@ class InputHandler:
 
     def start_keyboard_capture(self):
         self.stop_keyboard_capture()
+        if self.special_key_injector is not None:
+            self.special_key_injector.release_active_modifiers()
         self.keyboard_listener = KeyboardListener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
