@@ -68,6 +68,7 @@ class DeskFlowGUI(ctk.CTk):
         self.client = None
         self.preferences = UserPreferences()
         saved_role = self.preferences.load_role()
+        saved_position = self.preferences.load_client_position()
         self.known_hosts = self.load_known_hosts()
         self.overlay_center_x = self.winfo_screenwidth() // 2
         self.overlay_center_y = self.winfo_screenheight() // 2
@@ -116,27 +117,20 @@ class DeskFlowGUI(ctk.CTk):
         self.server_btn = ctk.CTkButton(self.layout_frame, text="S", width=40, height=40, fg_color="#555555", state="disabled")
         self.server_btn.grid(row=1, column=1, padx=5, pady=5)
         
-        def set_layout(pos):
-            self.layout_position = pos
-            for p, btn in self.layout_btns.items():
-                if p == pos:
-                    btn.configure(text="C", fg_color="white", text_color="black")
-                else:
-                    btn.configure(text="", fg_color="#333333")
-                    
-        self.layout_btns['top'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('top'))
+        self.layout_btns['top'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: self.set_layout_position('top'))
         self.layout_btns['top'].grid(row=0, column=1, padx=5, pady=5)
         
-        self.layout_btns['left'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('left'))
+        self.layout_btns['left'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: self.set_layout_position('left'))
         self.layout_btns['left'].grid(row=1, column=0, padx=5, pady=5)
         
-        self.layout_btns['right'] = ctk.CTkButton(self.layout_frame, text="C", width=40, height=40, fg_color="white", text_color="black", command=lambda: set_layout('right'))
+        self.layout_btns['right'] = ctk.CTkButton(self.layout_frame, text="C", width=40, height=40, fg_color="white", text_color="black", command=lambda: self.set_layout_position('right'))
         self.layout_btns['right'].grid(row=1, column=2, padx=5, pady=5)
         
-        self.layout_btns['bottom'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: set_layout('bottom'))
+        self.layout_btns['bottom'] = ctk.CTkButton(self.layout_frame, text="", width=40, height=40, fg_color="#333333", command=lambda: self.set_layout_position('bottom'))
         self.layout_btns['bottom'].grid(row=2, column=1, padx=5, pady=5)
         
         self.layout_position = 'right'
+        self.set_layout_position(saved_position, persist=False)
         
         self.server_start_btn = ctk.CTkButton(self.tab_server, text="Start Server", command=self.start_server)
         self.server_start_btn.pack(pady=10)
@@ -355,6 +349,24 @@ class DeskFlowGUI(ctk.CTk):
             color,
             white_text=white_text,
         )
+
+    def set_layout_position(self, position, persist=True):
+        if position not in {"top", "left", "right", "bottom"}:
+            position = "right"
+        self.layout_position = position
+        for candidate, button in self.layout_btns.items():
+            if candidate == position:
+                button.configure(text="C", fg_color="white", text_color="black")
+            else:
+                button.configure(text="", fg_color="#333333")
+        if persist:
+            try:
+                self.preferences.save_client_position(position)
+            except Exception as error:
+                logger.error(
+                    "Could not save client position preference (%s)",
+                    error_name(error),
+                )
 
     def _approve_fingerprint(self, fingerprint, peer):
         return self.pairing_approval.request(fingerprint, peer)

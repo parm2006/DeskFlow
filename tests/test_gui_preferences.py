@@ -24,6 +24,28 @@ class Button:
 
 
 class PreferencesTests(unittest.TestCase):
+    def test_client_position_round_trips_and_preserves_saved_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = UserPreferences(root)
+            store.save_role("server")
+            store.save_client_position("left")
+
+            reloaded = UserPreferences(root)
+            self.assertEqual(reloaded.load_role(), "server")
+            self.assertEqual(reloaded.load_client_position(), "left")
+
+            reloaded.save_role("client")
+            self.assertEqual(UserPreferences(root).load_client_position(), "left")
+
+    def test_client_position_defaults_to_right_and_rejects_invalid_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = UserPreferences(Path(directory))
+
+            self.assertEqual(store.load_client_position(), "right")
+            with self.assertRaises(ValueError):
+                store.save_client_position("diagonal")
+
     def test_role_store_round_trips_only_supported_roles(self):
         with tempfile.TemporaryDirectory() as directory:
             store = UserPreferences(Path(directory))
@@ -44,6 +66,61 @@ class PreferencesTests(unittest.TestCase):
 
 
 class SuccessfulRoleTimingTests(unittest.TestCase):
+    def test_selecting_client_position_updates_buttons_and_saves_immediately(self):
+        saved = []
+
+        class LayoutButton:
+            def __init__(self):
+                self.values = {}
+
+            def configure(self, **values):
+                self.values.update(values)
+
+        gui = DeskFlowGUI.__new__(DeskFlowGUI)
+        gui.layout_btns = {
+            position: LayoutButton()
+            for position in ("top", "left", "right", "bottom")
+        }
+        gui.preferences = type(
+            "Preferences",
+            (),
+            {"save_client_position": lambda self, value: saved.append(value)},
+        )()
+
+        gui.set_layout_position("bottom")
+
+        self.assertEqual(gui.layout_position, "bottom")
+        self.assertEqual(saved, ["bottom"])
+        self.assertEqual(gui.layout_btns["bottom"].values["text"], "C")
+        self.assertEqual(gui.layout_btns["bottom"].values["fg_color"], "white")
+        self.assertEqual(gui.layout_btns["right"].values["text"], "")
+
+    def test_position_save_failure_keeps_selection_and_redacts_private_detail(self):
+        class LayoutButton:
+            def configure(self, **values):
+                return None
+
+        gui = DeskFlowGUI.__new__(DeskFlowGUI)
+        gui.layout_btns = {
+            position: LayoutButton()
+            for position in ("top", "left", "right", "bottom")
+        }
+        gui.preferences = type(
+            "Preferences",
+            (),
+            {
+                "save_client_position": lambda self, value: (_ for _ in ()).throw(
+                    PermissionError("private preference path")
+                ),
+            },
+        )()
+
+        with self.assertLogs("app.gui", level="ERROR") as logs:
+            gui.set_layout_position("top")
+
+        self.assertEqual(gui.layout_position, "top")
+        self.assertNotIn("private preference path", "\n".join(logs.output))
+
     def test_invalid_ports_show_actionable_status_without_starting_or_connecting(self):
         class Entry:
             def __init__(self, value):
