@@ -43,9 +43,10 @@ def toast_view(status):
         details = "Choose any Windows file prompt to continue"
     elif status.phase is TransferPhase.FAILED:
         if status.error_code == "ExplorerStartTimeout":
-            details = "Windows Explorer did not accept the paste."
+            message = "Windows Explorer did not accept the paste."
         else:
-            details = "DeskFlow could not finish the network transfer."
+            message = "DeskFlow could not finish the network transfer."
+        details = f"{_safe_file_label(status.label)} · {message}"
     elif status.phase is TransferPhase.COMPLETED:
         details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · Windows finished reading files"
     else:
@@ -152,3 +153,11 @@ def _size(value):
         if value < 1024 or unit == "TB":
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
+
+
+def _safe_file_label(value):
+    if not isinstance(value, str):
+        return "File"
+    filename = value.replace("\\", "/").rsplit("/", 1)[-1]
+    filename = "".join(character for character in filename if character.isprintable()).strip()
+    return filename or "File"

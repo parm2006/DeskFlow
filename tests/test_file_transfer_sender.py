@@ -44,6 +44,56 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_multi_file_source_failure_identifies_the_failed_file(self):
+        class Lane:
+            def __init__(self):
+                self.callbacks = {}
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = Path(directory) / "first.bin"
+            failed_path = Path(directory) / "failed.bin"
+            first_path.write_bytes(b"first")
+            failed_path.write_bytes(b"failed")
+            first_source = SourceFile.snapshot(first_path)
+            failed_source = SourceFile.snapshot(failed_path)
+            manifest = Manifest.create([
+                FileItem(
+                    "folder/first.bin",
+                    ItemType.FILE,
+                    first_source.size,
+                    first_source.modified_ns,
+                    first_source.sha256,
+                ),
+                FileItem(
+                    "private/folder/failed.bin",
+                    ItemType.FILE,
+                    failed_source.size + 1,
+                    failed_source.modified_ns,
+                    failed_source.sha256,
+                ),
+            ])
+            controller = TransferController()
+            sender = TransferSender(Lane(), controller=controller)
+
+            with self.assertRaises(ValueError):
+                sender.send_job(
+                    manifest,
+                    {
+                        "folder/first.bin": first_source,
+                        "private/folder/failed.bin": failed_source,
+                    },
+                )
+
+        status = controller.status(manifest.job_id)
+        self.assertEqual(status.phase, TransferPhase.FAILED)
+        self.assertEqual(status.label, "failed.bin")
+
     def test_invalid_unknown_progress_job_id_is_not_retained(self):
         lane = type(
             "Lane", (),

@@ -124,7 +124,7 @@ class TransferToastViewTests(unittest.TestCase):
         status = TransferStatus(
             "job",
             TransferPhase.FAILED,
-            "private-file-name.bin",
+            r"C:\Users\person\private\private-file-name.bin",
             0,
             100,
             error_code="ExplorerStartTimeout",
@@ -132,9 +132,30 @@ class TransferToastViewTests(unittest.TestCase):
 
         view = toast_view(status)
 
-        self.assertEqual(view.details, "Windows Explorer did not accept the paste.")
+        self.assertEqual(
+            view.details,
+            "private-file-name.bin · Windows Explorer did not accept the paste.",
+        )
         self.assertEqual(view.hide_after_ms, 3000)
-        self.assertNotIn("private-file-name", view.details)
+        self.assertNotIn(r"C:\Users\person\private", view.details)
+
+    def test_network_failure_includes_only_the_failed_file_name(self):
+        status = TransferStatus(
+            "job",
+            TransferPhase.FAILED,
+            "/home/person/private/archive.zip",
+            0,
+            100,
+            error_code="OSError",
+        )
+
+        view = toast_view(status)
+
+        self.assertEqual(
+            view.details,
+            "archive.zip · DeskFlow could not finish the network transfer.",
+        )
+        self.assertNotIn("/home/person/private", view.details)
 
     def test_confirmed_cancellation_hides_immediately(self):
         status = TransferStatus("job", TransferPhase.CANCELLED, "file.bin", 50, 100)

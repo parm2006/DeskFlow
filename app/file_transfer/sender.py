@@ -40,6 +40,7 @@ class TransferSender:
     def send_job(self, manifest, sources, announce_manifest=True):
         validate_manifest(manifest)
         label = _manifest_label(manifest)
+        failure_label = label
         bytes_done = 0
         with self._paste_lock:
             self._paste_jobs[manifest.job_id] = (label, manifest.total_size)
@@ -59,6 +60,7 @@ class TransferSender:
             for item in manifest.items:
                 if item.item_type is ItemType.DIRECTORY:
                     continue
+                failure_label = item.relative_path.rsplit("/", 1)[-1]
                 source = sources[item.relative_path]
                 if source.size != item.size or source.sha256 != item.sha256:
                     raise ValueError("source snapshot does not match the manifest")
@@ -79,6 +81,7 @@ class TransferSender:
                     "job_id": manifest.job_id,
                     "relative_path": item.relative_path,
                 })
+            failure_label = label
             verified = threading.Event()
             self._verified[manifest.job_id] = verified
             self.lane.send({"type": "job_complete", "job_id": manifest.job_id})
@@ -97,7 +100,7 @@ class TransferSender:
                 self._paste_jobs.pop(manifest.job_id, None)
             if self.controller:
                 self.controller.update(
-                    manifest.job_id, TransferPhase.FAILED, label, bytes_done,
+                    manifest.job_id, TransferPhase.FAILED, failure_label, bytes_done,
                     manifest.total_size, error_code=type(error).__name__,
                 )
             raise
