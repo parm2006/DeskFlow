@@ -1,5 +1,7 @@
 import struct
 import unittest
+from ctypes import byref
+from ctypes.wintypes import BOOL
 
 import pythoncom
 import win32clipboard
@@ -22,6 +24,7 @@ from app.windows_virtual_files import (
     open_file_stream,
     open_callback_stream,
     CallbackStream,
+    publish_virtual_files,
 )
 
 
@@ -83,6 +86,38 @@ class VirtualFileSetTests(unittest.TestCase):
 
 
 class VirtualFileDataObjectTests(unittest.TestCase):
+    def test_published_virtual_files_advertise_async_extraction_to_explorer(self):
+        pythoncom.OleInitialize()
+        owner = None
+        try:
+            owner = publish_virtual_files(
+                VirtualFileSet([VirtualFile("remote.bin", 4, lambda: b"data")])
+            )
+
+            self.assertTrue(owner.async_mode_enabled())
+            owner.clipboard_interface.QueryGetData(
+                owner.data_object.descriptor_format_etc()
+            )
+            medium = owner.clipboard_interface.GetData(
+                owner.data_object.descriptor_format_etc()
+            )
+            self.assertEqual(
+                parse_file_group_descriptor(medium.data)[0].name,
+                "remote.bin",
+            )
+
+            active = BOOL()
+            owner.async_interface.StartOperation(None)
+            owner.async_interface.InOperation(byref(active))
+            self.assertTrue(active.value)
+            owner.async_interface.EndOperation(0, None, 0)
+            owner.async_interface.InOperation(byref(active))
+            self.assertFalse(active.value)
+        finally:
+            if owner is not None:
+                pythoncom.OleSetClipboard(None)
+            pythoncom.CoUninitialize()
+
     def test_performed_drop_notification_is_accepted_and_reported(self):
         observed = []
         data_object = VirtualFileDataObject(

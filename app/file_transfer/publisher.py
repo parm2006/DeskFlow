@@ -18,6 +18,10 @@ from app.safe_errors import error_name
 logger = logging.getLogger(__name__)
 
 
+def _clipboard_interface(owner):
+    return getattr(owner, "clipboard_interface", owner)
+
+
 def capture_clipboard_owner(get_clipboard=pythoncom.OleGetClipboard):
     try:
         return get_clipboard()
@@ -31,7 +35,7 @@ def restore_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     restore=pythoncom.OleSetClipboard,
 ):
-    if not is_current(owner):
+    if not is_current(_clipboard_interface(owner)):
         return False
     restore(previous_owner)
     return True
@@ -42,7 +46,7 @@ def release_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     clear=lambda: pythoncom.OleSetClipboard(None),
 ):
-    if not is_current(owner):
+    if not is_current(_clipboard_interface(owner)):
         return False
     clear()
     return True

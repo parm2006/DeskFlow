@@ -29,6 +29,20 @@ class RecordingReceiver:
 
 
 class VirtualPastePublisherTests(unittest.TestCase):
+    def test_release_checks_wrapped_clipboard_interface(self):
+        interface = object()
+        owner = type("Owner", (), {"clipboard_interface": interface})()
+        checked = []
+
+        self.assertTrue(
+            release_virtual_clipboard_owner(
+                owner,
+                is_current=lambda candidate: checked.append(candidate) or True,
+                clear=lambda: None,
+            )
+        )
+        self.assertEqual(checked, [interface])
+
     def test_release_clears_only_the_matching_current_clipboard_owner(self):
         owner = object()
         cleared = []

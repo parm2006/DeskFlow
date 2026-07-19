@@ -1,11 +1,16 @@
 import struct
+import ctypes
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
+from ctypes import POINTER, byref, c_void_p
+from ctypes.wintypes import BOOL, DWORD
 
 import pythoncom
 import win32clipboard
 import winerror
+from comtypes import COMObject, COMMETHOD, GUID, HRESULT, IUnknown
 from win32com.server import util
 from win32com.server.exception import COMException
 
@@ -24,6 +29,203 @@ FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 FILE_GROUP_DESCRIPTOR_FORMAT = "FileGroupDescriptorW"
 FILE_CONTENTS_FORMAT = "FileContents"
+
+IID_IDATAOBJECT_ASYNC_CAPABILITY = GUID(
+    "{3D8B0590-F691-11D2-8EA9-006097DF5BD4}"
+)
+
+
+class _IDataObject(IUnknown):
+    _iid_ = GUID("{0000010E-0000-0000-C000-000000000046}")
+    _methods_ = [
+        COMMETHOD(
+            [], HRESULT, "GetData",
+            (["in"], c_void_p, "format"),
+            (["in"], c_void_p, "medium"),
+        ),
+        COMMETHOD(
+            [], HRESULT, "GetDataHere",
+            (["in"], c_void_p, "format"),
+            (["in"], c_void_p, "medium"),
+        ),
+        COMMETHOD([], HRESULT, "QueryGetData", (["in"], c_void_p, "format")),
+        COMMETHOD(
+            [], HRESULT, "GetCanonicalFormatEtc",
+            (["in"], c_void_p, "source"),
+            (["in"], c_void_p, "target"),
+        ),
+        COMMETHOD(
+            [], HRESULT, "SetData",
+            (["in"], c_void_p, "format"),
+            (["in"], c_void_p, "medium"),
+            (["in"], BOOL, "release"),
+        ),
+        COMMETHOD(
+            [], HRESULT, "EnumFormatEtc",
+            (["in"], DWORD, "direction"),
+            (["in"], c_void_p, "result"),
+        ),
+        COMMETHOD(
+            [], HRESULT, "DAdvise",
+            (["in"], c_void_p, "format"),
+            (["in"], DWORD, "flags"),
+            (["in"], c_void_p, "sink"),
+            (["in"], c_void_p, "connection"),
+        ),
+        COMMETHOD([], HRESULT, "DUnadvise", (["in"], DWORD, "connection")),
+        COMMETHOD([], HRESULT, "EnumDAdvise", (["in"], c_void_p, "result")),
+    ]
+
+
+class _IDataObjectAsyncCapability(IUnknown):
+    _iid_ = IID_IDATAOBJECT_ASYNC_CAPABILITY
+    _methods_ = [
+        COMMETHOD([], HRESULT, "SetAsyncMode", (["in"], BOOL, "enabled")),
+        COMMETHOD([], HRESULT, "GetAsyncMode", (["in"], c_void_p, "enabled")),
+        COMMETHOD([], HRESULT, "StartOperation", (["in"], c_void_p, "reserved")),
+        COMMETHOD([], HRESULT, "InOperation", (["in"], c_void_p, "active")),
+        COMMETHOD(
+            [], HRESULT, "EndOperation",
+            (["in"], HRESULT, "result"),
+            (["in"], c_void_p, "reserved"),
+            (["in"], DWORD, "effects"),
+        ),
+    ]
+
+
+_DATA_OBJECT_ARGUMENTS = (
+    (c_void_p, c_void_p),
+    (c_void_p, c_void_p),
+    (c_void_p,),
+    (c_void_p, c_void_p),
+    (c_void_p, c_void_p, BOOL),
+    (DWORD, c_void_p),
+    (c_void_p, DWORD, c_void_p, c_void_p),
+    (DWORD,),
+    (c_void_p,),
+)
+
+
+def _pyiunknown_address(value):
+    # pywin32 does not expose the native pointer publicly. PyIUnknown stores it
+    # immediately after the CPython PyObject header; accept only the exact
+    # gateway type constructed above before reading that private field.
+    if sys.implementation.name != "cpython" or type(value).__name__ != "PyIDataObject":
+        raise TypeError("expected a CPython pywin32 IDataObject gateway")
+    address = c_void_p.from_address(
+        id(value) + (2 * ctypes.sizeof(c_void_p))
+    ).value
+    if not address:
+        raise RuntimeError("COM data object has no native interface")
+    pythoncom.ObjectFromAddress(address, pythoncom.IID_IUnknown)
+    return address
+
+
+class _AsyncDataObjectProxy(COMObject):
+    _com_interfaces_ = [_IDataObject, _IDataObjectAsyncCapability]
+
+    def __init__(self, inner):
+        super().__init__()
+        self._inner_owner = inner
+        self._inner = _pyiunknown_address(inner)
+        self._vtable = ctypes.cast(
+            self._inner, POINTER(POINTER(c_void_p))
+        ).contents
+        self._async_mode = True
+        self._in_operation = False
+        self._async_hold = None
+        self._state_lock = threading.Lock()
+
+    def _forward(self, index, *arguments):
+        prototype = ctypes.WINFUNCTYPE(
+            HRESULT, c_void_p, *_DATA_OBJECT_ARGUMENTS[index - 3]
+        )
+        return prototype(self._vtable[index])(self._inner, *arguments)
+
+    def GetData(self, format_pointer, medium_pointer):
+        return self._forward(3, format_pointer, medium_pointer)
+
+    def GetDataHere(self, format_pointer, medium_pointer):
+        return self._forward(4, format_pointer, medium_pointer)
+
+    def QueryGetData(self, format_pointer):
+        return self._forward(5, format_pointer)
+
+    def GetCanonicalFormatEtc(self, source, target):
+        return self._forward(6, source, target)
+
+    def SetData(self, format_pointer, medium_pointer, release):
+        return self._forward(7, format_pointer, medium_pointer, release)
+
+    def EnumFormatEtc(self, direction, result):
+        return self._forward(8, direction, result)
+
+    def DAdvise(self, format_pointer, flags, sink, connection):
+        return self._forward(9, format_pointer, flags, sink, connection)
+
+    def DUnadvise(self, connection):
+        return self._forward(10, connection)
+
+    def EnumDAdvise(self, result):
+        return self._forward(11, result)
+
+    def SetAsyncMode(self, enabled):
+        release = None
+        with self._state_lock:
+            self._async_mode = bool(enabled)
+            if self._async_mode and self._async_hold is None:
+                self._async_hold = self.QueryInterface(
+                    _IDataObjectAsyncCapability
+                )
+            elif not self._async_mode:
+                release, self._async_hold = self._async_hold, None
+        del release
+        return 0
+
+    def GetAsyncMode(self, enabled):
+        with self._state_lock:
+            value = self._async_mode
+        ctypes.cast(enabled, POINTER(BOOL))[0] = value
+        return 0
+
+    def StartOperation(self, reserved):
+        with self._state_lock:
+            self._in_operation = True
+        return 0
+
+    def InOperation(self, active):
+        with self._state_lock:
+            value = self._in_operation
+        ctypes.cast(active, POINTER(BOOL))[0] = value
+        return 0
+
+    def EndOperation(self, result, reserved, effects):
+        with self._state_lock:
+            self._in_operation = False
+            release, self._async_hold = self._async_hold, None
+        del release
+        return 0
+
+
+class AsyncClipboardOwner:
+    def __init__(self, data_object, wrapped):
+        self.data_object = data_object
+        self.wrapped = wrapped
+        self.proxy = _AsyncDataObjectProxy(wrapped)
+        self.data_interface = self.proxy.QueryInterface(_IDataObject)
+        self.async_interface = self.data_interface.QueryInterface(
+            _IDataObjectAsyncCapability
+        )
+        self.async_interface.SetAsyncMode(True)
+        address = ctypes.cast(self.data_interface, c_void_p).value
+        self.clipboard_interface = pythoncom.ObjectFromAddress(
+            address, pythoncom.IID_IDataObject
+        )
+
+    def async_mode_enabled(self):
+        enabled = BOOL()
+        self.async_interface.GetAsyncMode(byref(enabled))
+        return bool(enabled.value)
 
 
 @dataclass(frozen=True)
@@ -224,8 +426,9 @@ def publish_virtual_files(file_set, on_performed_drop=None):
         file_set, on_performed_drop=on_performed_drop
     )
     wrapped = util.wrap(data_object, pythoncom.IID_IDataObject)
-    pythoncom.OleSetClipboard(wrapped)
-    return data_object, wrapped
+    owner = AsyncClipboardOwner(data_object, wrapped)
+    pythoncom.OleSetClipboard(owner.clipboard_interface)
+    return owner
 
 
 class FileBackedStream:
