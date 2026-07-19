@@ -181,6 +181,8 @@ class VirtualPastePublisher:
     def _process(self, manifest, receiver, keyboard):
         job_id = manifest["job_id"]
         consumed = threading.Event()
+        if not receiver.wait_until_network_verified(job_id):
+            return False
         previous_owner = self._capture()
 
         def performed_drop():

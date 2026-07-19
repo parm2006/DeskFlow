@@ -201,6 +201,7 @@ class TransferReceiver:
             if set(job["completed"]) != expected_files:
                 raise ValueError("job completed before every file was verified")
             job["network_verified"] = True
+            job["condition"].notify_all()
         covered = self._paste_covered(job)
         if covered == job["manifest"].total_size:
             self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
@@ -210,6 +211,20 @@ class TransferReceiver:
             self._update_paste(job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
         if self.lane is not None:
             self.lane.send({"type": "job_verified", "job_id": job_id})
+
+    def wait_until_network_verified(self, job_id):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        with job["condition"]:
+            while not job["network_verified"]:
+                if (
+                    job["error"] is not None
+                    or self._terminal_reason(job_id) is not None
+                ):
+                    return False
+                job["condition"].wait()
+            return True
 
     def record_stream_read(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)

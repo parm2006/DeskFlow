@@ -14,6 +14,59 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_network_cache_waiter_wakes_only_after_verified_completion(self):
+        content = b"cached before Explorer"
+        item = FileItem(
+            "cached.bin", ItemType.FILE, len(content), 1,
+            hashlib.sha256(content).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            results = []
+            waiter = threading.Thread(
+                target=lambda: results.append(
+                    receiver.wait_until_network_verified(manifest.job_id)
+                )
+            )
+            waiter.start()
+            time.sleep(0.01)
+            self.assertTrue(waiter.is_alive())
+
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": 0,
+                "compressed": False,
+                "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.complete_job(manifest.job_id)
+            waiter.join(1)
+
+            self.assertEqual(results, [True])
+
+    def test_network_cache_waiter_wakes_as_failed_when_cancelled(self):
+        item = FileItem("cancel.bin", ItemType.FILE, 1, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            results = []
+            waiter = threading.Thread(
+                target=lambda: results.append(
+                    receiver.wait_until_network_verified(manifest.job_id)
+                )
+            )
+            waiter.start()
+            time.sleep(0.01)
+
+            receiver.cancel_job(manifest.job_id)
+            waiter.join(1)
+
+            self.assertEqual(results, [False])
+
     def test_active_manifest_count_is_bounded_and_cancel_releases_capacity(self):
         item = FileItem(
             "empty.bin", ItemType.FILE, 0, 1, hashlib.sha256(b"").hexdigest()

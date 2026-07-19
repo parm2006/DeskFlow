@@ -24,6 +24,9 @@ class RecordingReceiver:
     def record_stream_close(self, job_id, path):
         return None
 
+    def wait_until_network_verified(self, job_id):
+        return True
+
 
 class VirtualPastePublisherTests(unittest.TestCase):
     def test_release_clears_only_the_matching_current_clipboard_owner(self):
@@ -75,6 +78,24 @@ class VirtualPastePublisherTests(unittest.TestCase):
             publisher._process(self.manifest("A"), receiver, object())
         )
         self.assertEqual(restored, [(virtual_owner, previous_owner)])
+
+    def test_virtual_clipboard_is_not_published_before_network_cache_is_ready(self):
+        receiver = self.make_receiver()
+        receiver.wait_until_network_verified = lambda job_id: False
+        published = []
+        publisher = VirtualPastePublisher(
+            publish=lambda *args, **kwargs: published.append("published"),
+            inject=lambda keyboard: None,
+            capture=lambda: None,
+            restore=lambda owner, previous: None,
+            keyboard_factory=object,
+            explorer_start_timeout=0.01,
+        )
+
+        self.assertFalse(
+            publisher._process(self.manifest("A"), receiver, object())
+        )
+        self.assertEqual(published, [])
 
     @staticmethod
     def manifest(job_id):
