@@ -193,10 +193,19 @@ class VirtualPastePublisher:
             consumed.set()
             return receiver.record_performed_drop(job_id)
 
+        def operation_ended(result, effects):
+            if result >= 0:
+                return receiver.record_performed_drop(job_id)
+            return receiver.fail_paste(job_id, "ExplorerCopyFailed")
+
         file_set = build_virtual_file_set(
             manifest, receiver, on_stream_open=consumed.set
         )
-        owner = self._publish(file_set, on_performed_drop=performed_drop)
+        owner = self._publish(
+            file_set,
+            on_performed_drop=performed_drop,
+            on_operation_end=operation_ended,
+        )
         with self._owner_lock:
             self._owner = owner
         accepted = False
@@ -218,6 +227,9 @@ class VirtualPastePublisher:
                     return False
                 consumed.wait(0.005)
             accepted = True
+            while not receiver.is_paste_terminal(job_id):
+                pythoncom.PumpWaitingMessages()
+                time.sleep(0.005)
             return True
         finally:
             self._restore_owner(owner, previous_owner, retain=accepted)

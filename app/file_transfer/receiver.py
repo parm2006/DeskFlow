@@ -204,7 +204,12 @@ class TransferReceiver:
             job["condition"].notify_all()
         covered = self._paste_covered(job)
         if covered == job["manifest"].total_size:
-            self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
+            self._publish_paste_progress(
+                job_id,
+                TransferPhase.VERIFYING_RESULT,
+                covered,
+                force=True,
+            )
         elif covered:
             self._publish_paste_progress(job_id, TransferPhase.PASTING, covered, force=True)
         else:
@@ -235,11 +240,16 @@ class TransferReceiver:
         if job["paste_started"] is None:
             job["paste_started"] = self.clock()
         phase = (
-            TransferPhase.COMPLETED
+            TransferPhase.VERIFYING_RESULT
             if job["network_verified"] and covered == job["manifest"].total_size
             else TransferPhase.PASTING
         )
-        self._publish_paste_progress(job_id, phase, covered, force=phase is TransferPhase.COMPLETED)
+        self._publish_paste_progress(
+            job_id,
+            phase,
+            covered,
+            force=phase is TransferPhase.VERIFYING_RESULT,
+        )
 
     def record_stream_open(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)

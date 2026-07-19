@@ -212,15 +212,32 @@ class TransferSenderTests(unittest.TestCase):
             item = FileItem("report.txt", ItemType.FILE, source.size, source.modified_ns, source.sha256)
             manifest = Manifest.create([item])
             receiver = TransferReceiver(Path(receive_directory))
+            sender = TransferSender(LoopbackLane(receiver))
+            errors = []
+            worker = threading.Thread(
+                target=lambda: self._capture_error(
+                    errors,
+                    lambda: sender.send_job(manifest, {"report.txt": source}),
+                )
+            )
 
-            TransferSender(LoopbackLane(receiver)).send_job(manifest, {"report.txt": source})
+            worker.start()
+            self.assertTrue(receiver.wait_until_network_verified(manifest.job_id))
 
             completed = list((Path(receive_directory) / "completed" / manifest.job_id).glob("*.cache"))
             self.assertEqual(len(completed), 1)
+            receiver.record_stream_open(manifest.job_id, "report.txt")
             self.assertEqual(
                 receiver.read_range(manifest.job_id, "report.txt", 0, source.size),
                 source_path.read_bytes(),
             )
+            receiver.record_stream_read(
+                manifest.job_id, "report.txt", 0, source.size
+            )
+            receiver.record_performed_drop(manifest.job_id)
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
             self.assertNotEqual(completed[0].read_bytes(), source_path.read_bytes())
 
     def test_waits_for_destination_owned_explorer_progress_after_network_verification(self):
@@ -237,19 +254,37 @@ class TransferSenderTests(unittest.TestCase):
             receiver = TransferReceiver(Path(receive_directory))
 
             lane = LoopbackLane(receiver)
-            TransferSender(lane, controller=controller).send_job(
-                manifest, {"report.txt": source}
+            sender = TransferSender(lane, controller=controller)
+            waiting = threading.Event()
+            controller.subscribe(
+                lambda status: waiting.set()
+                if status.phase is TransferPhase.WAITING_FOR_EXPLORER
+                else None
             )
+            errors = []
+            worker = threading.Thread(
+                target=lambda: self._capture_error(
+                    errors,
+                    lambda: sender.send_job(manifest, {"report.txt": source}),
+                )
+            )
+            worker.start()
+            self.assertTrue(waiting.wait(1))
 
             self.assertEqual(observed[0].phase, TransferPhase.WAITING_FOR_EXPLORER)
             self.assertNotIn(TransferPhase.TRANSFERRING, [status.phase for status in observed])
             self.assertNotIn(TransferPhase.VERIFYING, [status.phase for status in observed])
             self.assertEqual(observed[-1].phase, TransferPhase.WAITING_FOR_EXPLORER)
+            threading.Event().wait(0.05)
+            self.assertTrue(worker.is_alive())
             lane.emit({
                 "type": "paste_progress", "job_id": manifest.job_id,
                 "phase": "completed", "bytes_done": source.size,
                 "bytes_total": source.size, "bytes_per_second": source.size,
             })
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
             self.assertEqual(observed[-1].phase, TransferPhase.COMPLETED)
             self.assertEqual(observed[-1].bytes_done, source.size)
 

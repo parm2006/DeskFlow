@@ -16,6 +16,7 @@ SAFE_DESTINATION_ERROR_CODES = frozenset((
     "ClipboardPublishFailed",
     "PasteInjectionFailed",
     "ExplorerStartTimeout",
+    "ExplorerCopyFailed",
 ))
 
 
@@ -30,6 +31,7 @@ class TransferSender:
         self.clock = clock
         self._verified = {}
         self._paste_jobs = {}
+        self._paste_terminals = {}
         self._early_paste_terminal = OrderedDict()
         self._early_paste_limit = 256
         self._paste_lock = threading.Lock()
@@ -44,6 +46,11 @@ class TransferSender:
         bytes_done = 0
         with self._paste_lock:
             self._paste_jobs[manifest.job_id] = (label, manifest.total_size)
+            paste_terminal = threading.Event()
+            terminal_result = [None]
+            self._paste_terminals[manifest.job_id] = (
+                paste_terminal, terminal_result
+            )
             early_terminal = self._early_paste_terminal.pop(manifest.job_id, None)
         self._waiting(manifest, label)
         if announce_manifest:
@@ -91,6 +98,16 @@ class TransferSender:
                 if self.clock() >= deadline:
                     raise TimeoutError("destination did not verify the file transfer")
             self._waiting(manifest, label)
+            while not paste_terminal.wait(0.05):
+                self._check_cancelled(manifest.job_id)
+            terminal = terminal_result[0]
+            phase = TransferPhase(terminal["phase"])
+            if phase is TransferPhase.CANCELLED:
+                raise TransferCancelled(manifest.job_id)
+            if phase is TransferPhase.FAILED:
+                raise DestinationPasteError(
+                    _safe_destination_error_code(terminal.get("error_code"))
+                )
         except TransferCancelled:
             with self._paste_lock:
                 self._paste_jobs.pop(manifest.job_id, None)
@@ -106,6 +123,8 @@ class TransferSender:
             raise
         finally:
             self._verified.pop(manifest.job_id, None)
+            with self._paste_lock:
+                self._paste_terminals.pop(manifest.job_id, None)
 
     def _on_verified(self, metadata, payload):
         event = self._verified.get(metadata.get("job_id"))
@@ -150,6 +169,7 @@ class TransferSender:
             speed = metadata.get("bytes_per_second", 0.0)
             if phase not in {
                 TransferPhase.PASTING,
+                TransferPhase.VERIFYING_RESULT,
                 TransferPhase.COMPLETED,
                 TransferPhase.CANCELLED,
                 TransferPhase.FAILED,
@@ -179,6 +199,10 @@ class TransferSender:
             TransferPhase.FAILED,
         }:
             with self._paste_lock:
+                terminal = self._paste_terminals.get(job_id)
+                if terminal is not None:
+                    terminal[1][0] = dict(metadata)
+                    terminal[0].set()
                 self._paste_jobs.pop(job_id, None)
         return True
 

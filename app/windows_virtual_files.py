@@ -10,7 +10,9 @@ from ctypes.wintypes import BOOL, DWORD
 import pythoncom
 import win32clipboard
 import winerror
-from comtypes import COMObject, COMMETHOD, GUID, HRESULT, IUnknown
+from comtypes import (
+    COMObject, COMMETHOD, GUID, HRESULT, IUnknown, ReturnHRESULT,
+)
 from win32com.server import util
 from win32com.server.exception import COMException
 
@@ -124,9 +126,10 @@ def _pyiunknown_address(value):
 class _AsyncDataObjectProxy(COMObject):
     _com_interfaces_ = [_IDataObject, _IDataObjectAsyncCapability]
 
-    def __init__(self, inner):
+    def __init__(self, inner, on_operation_end=None):
         super().__init__()
         self._inner_owner = inner
+        self._on_operation_end = on_operation_end
         self._inner = _pyiunknown_address(inner)
         self._vtable = ctypes.cast(
             self._inner, POINTER(POINTER(c_void_p))
@@ -138,9 +141,14 @@ class _AsyncDataObjectProxy(COMObject):
 
     def _forward(self, index, *arguments):
         prototype = ctypes.WINFUNCTYPE(
-            HRESULT, c_void_p, *_DATA_OBJECT_ARGUMENTS[index - 3]
+            ctypes.c_long, c_void_p, *_DATA_OBJECT_ARGUMENTS[index - 3]
         )
-        return prototype(self._vtable[index])(self._inner, *arguments)
+        result = prototype(self._vtable[index])(
+            self._inner, *arguments
+        )
+        if result:
+            raise ReturnHRESULT(result, "")
+        return 0
 
     def GetData(self, format_pointer, medium_pointer):
         return self._forward(3, format_pointer, medium_pointer)
@@ -203,15 +211,20 @@ class _AsyncDataObjectProxy(COMObject):
         with self._state_lock:
             self._in_operation = False
             release, self._async_hold = self._async_hold, None
+            callback = self._on_operation_end
+        if callback is not None:
+            callback(int(result), int(effects))
         del release
         return 0
 
 
 class AsyncClipboardOwner:
-    def __init__(self, data_object, wrapped):
+    def __init__(self, data_object, wrapped, on_operation_end=None):
         self.data_object = data_object
         self.wrapped = wrapped
-        self.proxy = _AsyncDataObjectProxy(wrapped)
+        self.proxy = _AsyncDataObjectProxy(
+            wrapped, on_operation_end=on_operation_end
+        )
         self.data_interface = self.proxy.QueryInterface(_IDataObject)
         self.async_interface = self.data_interface.QueryInterface(
             _IDataObjectAsyncCapability
@@ -420,13 +433,17 @@ class VirtualFileDataObject:
         raise COMException(description="unsupported clipboard format", scode=winerror.DV_E_FORMATETC)
 
 
-def publish_virtual_files(file_set, on_performed_drop=None):
+def publish_virtual_files(
+    file_set, on_performed_drop=None, on_operation_end=None,
+):
     """Publish virtual files through the OLE clipboard on the calling STA thread."""
     data_object = VirtualFileDataObject(
         file_set, on_performed_drop=on_performed_drop
     )
     wrapped = util.wrap(data_object, pythoncom.IID_IDataObject)
-    owner = AsyncClipboardOwner(data_object, wrapped)
+    owner = AsyncClipboardOwner(
+        data_object, wrapped, on_operation_end=on_operation_end
+    )
     pythoncom.OleSetClipboard(owner.clipboard_interface)
     return owner
 
