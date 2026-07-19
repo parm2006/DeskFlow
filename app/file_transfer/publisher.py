@@ -18,10 +18,6 @@ from app.safe_errors import error_name
 logger = logging.getLogger(__name__)
 
 
-def _clipboard_interface(owner):
-    return getattr(owner, "clipboard_interface", owner)
-
-
 def capture_clipboard_owner(get_clipboard=pythoncom.OleGetClipboard):
     try:
         return get_clipboard()
@@ -35,7 +31,7 @@ def restore_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     restore=pythoncom.OleSetClipboard,
 ):
-    if not is_current(_clipboard_interface(owner)):
+    if not is_current(owner):
         return False
     restore(previous_owner)
     return True
@@ -46,7 +42,7 @@ def release_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     clear=lambda: pythoncom.OleSetClipboard(None),
 ):
-    if not is_current(_clipboard_interface(owner)):
+    if not is_current(owner):
         return False
     clear()
     return True
@@ -185,27 +181,16 @@ class VirtualPastePublisher:
     def _process(self, manifest, receiver, keyboard):
         job_id = manifest["job_id"]
         consumed = threading.Event()
-        if not receiver.wait_until_network_verified(job_id):
-            return False
         previous_owner = self._capture()
 
         def performed_drop():
             consumed.set()
             return receiver.record_performed_drop(job_id)
 
-        def operation_ended(result, effects):
-            if result >= 0:
-                return receiver.record_performed_drop(job_id)
-            return receiver.fail_paste(job_id, "ExplorerCopyFailed")
-
         file_set = build_virtual_file_set(
             manifest, receiver, on_stream_open=consumed.set
         )
-        owner = self._publish(
-            file_set,
-            on_performed_drop=performed_drop,
-            on_operation_end=operation_ended,
-        )
+        owner = self._publish(file_set, on_performed_drop=performed_drop)
         with self._owner_lock:
             self._owner = owner
         accepted = False
@@ -227,9 +212,6 @@ class VirtualPastePublisher:
                     return False
                 consumed.wait(0.005)
             accepted = True
-            while not receiver.is_paste_terminal(job_id):
-                pythoncom.PumpWaitingMessages()
-                time.sleep(0.005)
             return True
         finally:
             self._restore_owner(owner, previous_owner, retain=accepted)

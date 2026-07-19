@@ -257,38 +257,19 @@ class TransportTests(unittest.TestCase):
                 ).hexdigest()
             try:
                 client.connect("127.0.0.1", server.port, fingerprint, token)
-                errors = []
-
-                def send():
-                    try:
-                        TransferSender(client).send_job(
-                            manifest, {"received.txt": source}
-                        )
-                    except Exception as error:
-                        errors.append(error)
-
-                worker = threading.Thread(target=send)
-                worker.start()
+                TransferSender(client).send_job(manifest, {"received.txt": source})
                 completed_dir = Path(receive_directory) / "completed" / manifest.job_id
                 for _ in range(100):
                     completed = list(completed_dir.glob("*.cache"))
                     if completed:
                         break
                     threading.Event().wait(0.01)
-                receiver.record_stream_open(manifest.job_id, "received.txt")
                 self.assertEqual(
                     receiver.read_range(
                         manifest.job_id, "received.txt", 0, source.size
                     ),
                     b"verified over TLS",
                 )
-                receiver.record_stream_read(
-                    manifest.job_id, "received.txt", 0, source.size
-                )
-                receiver.record_performed_drop(manifest.job_id)
-                worker.join(2)
-                self.assertFalse(worker.is_alive())
-                self.assertEqual(errors, [])
                 self.assertNotEqual(completed[0].read_bytes(), b"verified over TLS")
             finally:
                 client.close()

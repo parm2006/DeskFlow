@@ -1,8 +1,5 @@
 import struct
 import unittest
-import inspect
-from ctypes import byref
-from ctypes.wintypes import BOOL
 
 import pythoncom
 import win32clipboard
@@ -25,7 +22,6 @@ from app.windows_virtual_files import (
     open_file_stream,
     open_callback_stream,
     CallbackStream,
-    publish_virtual_files,
 )
 
 
@@ -87,49 +83,6 @@ class VirtualFileSetTests(unittest.TestCase):
 
 
 class VirtualFileDataObjectTests(unittest.TestCase):
-    def test_virtual_file_publisher_accepts_async_operation_callback(self):
-        self.assertIn(
-            "on_operation_end",
-            inspect.signature(publish_virtual_files).parameters,
-        )
-
-    def test_published_virtual_files_advertise_async_extraction_to_explorer(self):
-        pythoncom.OleInitialize()
-        owner = None
-        completed = []
-        try:
-            owner = publish_virtual_files(
-                VirtualFileSet([VirtualFile("remote.bin", 4, lambda: b"data")]),
-                on_operation_end=lambda result, effects: completed.append(
-                    (result, effects)
-                ),
-            )
-
-            self.assertTrue(owner.async_mode_enabled())
-            owner.clipboard_interface.QueryGetData(
-                owner.data_object.descriptor_format_etc()
-            )
-            medium = owner.clipboard_interface.GetData(
-                owner.data_object.descriptor_format_etc()
-            )
-            self.assertEqual(
-                parse_file_group_descriptor(medium.data)[0].name,
-                "remote.bin",
-            )
-
-            active = BOOL()
-            owner.async_interface.StartOperation(None)
-            owner.async_interface.InOperation(byref(active))
-            self.assertTrue(active.value)
-            owner.async_interface.EndOperation(0, None, 0)
-            owner.async_interface.InOperation(byref(active))
-            self.assertFalse(active.value)
-            self.assertEqual(completed, [(0, 0)])
-        finally:
-            if owner is not None:
-                pythoncom.OleSetClipboard(None)
-            pythoncom.CoUninitialize()
-
     def test_performed_drop_notification_is_accepted_and_reported(self):
         observed = []
         data_object = VirtualFileDataObject(
@@ -147,21 +100,6 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         )
 
         self.assertEqual(observed, ["done"])
-
-    def test_expected_unsupported_format_does_not_log_a_proxy_traceback(self):
-        owner = publish_virtual_files(self.file_set)
-        invalid_format = (
-            0,
-            None,
-            pythoncom.DVASPECT_CONTENT,
-            -1,
-            pythoncom.TYMED_HGLOBAL,
-        )
-        self.addCleanup(lambda: pythoncom.OleSetClipboard(None))
-
-        with self.assertNoLogs(level="ERROR"):
-            with self.assertRaises(pythoncom.com_error):
-                owner.clipboard_interface.QueryGetData(invalid_format)
 
     def setUp(self):
         pythoncom.OleInitialize()

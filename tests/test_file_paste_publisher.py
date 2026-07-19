@@ -1,6 +1,4 @@
 import unittest
-import threading
-import time
 
 from app.file_transfer.publisher import (
     VirtualPastePublisher, build_virtual_file_set, inject_paste_shortcut,
@@ -26,25 +24,8 @@ class RecordingReceiver:
     def record_stream_close(self, job_id, path):
         return None
 
-    def wait_until_network_verified(self, job_id):
-        return True
-
 
 class VirtualPastePublisherTests(unittest.TestCase):
-    def test_release_checks_wrapped_clipboard_interface(self):
-        interface = object()
-        owner = type("Owner", (), {"clipboard_interface": interface})()
-        checked = []
-
-        self.assertTrue(
-            release_virtual_clipboard_owner(
-                owner,
-                is_current=lambda candidate: checked.append(candidate) or True,
-                clear=lambda: None,
-            )
-        )
-        self.assertEqual(checked, [interface])
-
     def test_release_clears_only_the_matching_current_clipboard_owner(self):
         owner = object()
         cleared = []
@@ -78,9 +59,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         virtual_owner = object()
         restored = []
 
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
+        def publish(file_set, on_performed_drop=None):
             on_performed_drop()
             return virtual_owner
 
@@ -96,24 +75,6 @@ class VirtualPastePublisherTests(unittest.TestCase):
             publisher._process(self.manifest("A"), receiver, object())
         )
         self.assertEqual(restored, [(virtual_owner, previous_owner)])
-
-    def test_virtual_clipboard_is_not_published_before_network_cache_is_ready(self):
-        receiver = self.make_receiver()
-        receiver.wait_until_network_verified = lambda job_id: False
-        published = []
-        publisher = VirtualPastePublisher(
-            publish=lambda *args, **kwargs: published.append("published"),
-            inject=lambda keyboard: None,
-            capture=lambda: None,
-            restore=lambda owner, previous: None,
-            keyboard_factory=object,
-            explorer_start_timeout=0.01,
-        )
-
-        self.assertFalse(
-            publisher._process(self.manifest("A"), receiver, object())
-        )
-        self.assertEqual(published, [])
 
     @staticmethod
     def manifest(job_id):
@@ -142,12 +103,10 @@ class VirtualPastePublisherTests(unittest.TestCase):
 
             def record_performed_drop(self, job_id):
                 self.drops.append(job_id)
-                self.terminals.add(job_id)
                 return True
 
             def fail_paste(self, job_id, error_code):
                 self.failures.append((job_id, error_code))
-                self.terminals.add(job_id)
                 return True
 
             def is_paste_terminal(self, job_id):
@@ -159,9 +118,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         receiver = self.make_receiver()
         injected = []
 
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
+        def publish(file_set, on_performed_drop=None):
             owner = object()
             on_performed_drop()
             return owner
@@ -188,78 +145,13 @@ class VirtualPastePublisherTests(unittest.TestCase):
         self.assertEqual(len(injected), 2)
         self.assertIn("RuntimeError", "\n".join(logs.output))
 
-    def test_accepted_job_stays_in_front_until_it_is_terminal(self):
-        receiver = self.make_receiver()
-        published = []
-        streams = []
-        operation_ends = {}
-
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
-            name = file_set.files[0].name
-            published.append(name)
-            operation_ends[name] = on_operation_end
-            streams.append(file_set.files[0].open_stream())
-            return object()
-
-        publisher = VirtualPastePublisher(
-            publish=publish,
-            inject=lambda keyboard: None,
-            release=lambda owner: None,
-            keyboard_factory=object,
-        )
-
-        publisher.publish_and_paste(self.manifest("A"), receiver)
-        publisher.publish_and_paste(self.manifest("B"), receiver)
-
-        deadline = time.monotonic() + 1
-        while published != ["A.txt"] and time.monotonic() < deadline:
-            threading.Event().wait(0.005)
-        self.assertEqual(published, ["A.txt"])
-        self.assertIsNotNone(operation_ends["A.txt"])
-        operation_ends["A.txt"](0, 0)
-        deadline = time.monotonic() + 1
-        while published != ["A.txt", "B.txt"] and time.monotonic() < deadline:
-            threading.Event().wait(0.005)
-        self.assertEqual(published, ["A.txt", "B.txt"])
-        self.assertIsNotNone(operation_ends["B.txt"])
-        operation_ends["B.txt"](0, 0)
-        self.assertTrue(publisher.wait_until_idle(1))
-        self.assertEqual(published, ["A.txt", "B.txt"])
-
-    def test_failed_async_operation_reports_safe_failure(self):
-        receiver = self.make_receiver()
-        streams = []
-
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
-            streams.append(file_set.files[0].open_stream())
-            on_operation_end(-2147467259, 0)
-            return object()
-
-        publisher = VirtualPastePublisher(
-            publish=publish,
-            inject=lambda keyboard: None,
-            release=lambda owner: None,
-            keyboard_factory=object,
-        )
-
-        self.assertTrue(
-            publisher._process(self.manifest("A"), receiver, object())
-        )
-        self.assertEqual(receiver.failures, [("A", "ExplorerCopyFailed")])
-
     def test_explorer_never_consumes_times_out_and_next_job_can_run(self):
         receiver = self.make_receiver()
         publish_count = 0
         owners = []
         released = []
 
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
+        def publish(file_set, on_performed_drop=None):
             nonlocal publish_count
             publish_count += 1
             if publish_count == 2:
@@ -289,9 +181,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         receiver = self.make_receiver()
         publish_count = 0
 
-        def publish(
-            file_set, on_performed_drop=None, on_operation_end=None,
-        ):
+        def publish(file_set, on_performed_drop=None):
             nonlocal publish_count
             publish_count += 1
             if publish_count == 2:

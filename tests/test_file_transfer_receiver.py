@@ -14,59 +14,6 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
-    def test_network_cache_waiter_wakes_only_after_verified_completion(self):
-        content = b"cached before Explorer"
-        item = FileItem(
-            "cached.bin", ItemType.FILE, len(content), 1,
-            hashlib.sha256(content).hexdigest(),
-        )
-        manifest = Manifest.create([item])
-        with tempfile.TemporaryDirectory() as directory:
-            receiver = TransferReceiver(Path(directory))
-            receiver.accept_manifest(manifest.to_wire())
-            results = []
-            waiter = threading.Thread(
-                target=lambda: results.append(
-                    receiver.wait_until_network_verified(manifest.job_id)
-                )
-            )
-            waiter.start()
-            time.sleep(0.01)
-            self.assertTrue(waiter.is_alive())
-
-            receiver.accept_chunk({
-                "job_id": manifest.job_id,
-                "relative_path": item.relative_path,
-                "offset": 0,
-                "compressed": False,
-                "original_size": len(content),
-            }, content)
-            receiver.complete_file(manifest.job_id, item.relative_path)
-            receiver.complete_job(manifest.job_id)
-            waiter.join(1)
-
-            self.assertEqual(results, [True])
-
-    def test_network_cache_waiter_wakes_as_failed_when_cancelled(self):
-        item = FileItem("cancel.bin", ItemType.FILE, 1, 1, "0" * 64)
-        manifest = Manifest.create([item])
-        with tempfile.TemporaryDirectory() as directory:
-            receiver = TransferReceiver(Path(directory))
-            receiver.accept_manifest(manifest.to_wire())
-            results = []
-            waiter = threading.Thread(
-                target=lambda: results.append(
-                    receiver.wait_until_network_verified(manifest.job_id)
-                )
-            )
-            waiter.start()
-            time.sleep(0.01)
-
-            receiver.cancel_job(manifest.job_id)
-            waiter.join(1)
-
-            self.assertEqual(results, [False])
-
     def test_active_manifest_count_is_bounded_and_cancel_releases_capacity(self):
         item = FileItem(
             "empty.bin", ItemType.FILE, 0, 1, hashlib.sha256(b"").hexdigest()
@@ -291,7 +238,7 @@ class TransferReceiverTests(unittest.TestCase):
         self.assertNotIn(TransferPhase.VERIFYING, [status.phase for status in observed])
         self.assertEqual(observed[-1].phase, TransferPhase.WAITING_FOR_EXPLORER)
 
-    def test_explorer_reads_drive_progress_then_wait_for_windows_result(self):
+    def test_explorer_reads_drive_paste_progress_and_fallback_completion(self):
         content = b"explorer consumed bytes"
         item = FileItem("copy.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
         manifest = Manifest.create([item])
@@ -309,11 +256,6 @@ class TransferReceiverTests(unittest.TestCase):
             self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.PASTING)
             self.assertEqual(controller.status(manifest.job_id).bytes_done, 8)
             receiver.record_stream_read(manifest.job_id, item.relative_path, 8, len(content) - 8)
-            self.assertEqual(
-                controller.status(manifest.job_id).phase,
-                TransferPhase.VERIFYING_RESULT,
-            )
-            receiver.record_performed_drop(manifest.job_id)
 
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.COMPLETED)
         self.assertEqual(controller.status(manifest.job_id).bytes_done, len(content))
@@ -383,66 +325,6 @@ class TransferReceiverTests(unittest.TestCase):
                 receiver.read_range(manifest.job_id, item.relative_path, 0, 1)
 
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
-
-    def test_full_stream_read_waits_for_windows_result_before_completing(self):
-        content = b"complete bytes"
-        item = FileItem(
-            "copy.bin", ItemType.FILE, len(content), 1,
-            hashlib.sha256(content).hexdigest(),
-        )
-        manifest = Manifest.create([item])
-        controller = TransferController()
-        with tempfile.TemporaryDirectory() as directory:
-            receiver = TransferReceiver(Path(directory), controller=controller)
-            receiver.accept_manifest(manifest.to_wire())
-            receiver.accept_chunk({
-                "job_id": manifest.job_id,
-                "relative_path": item.relative_path,
-                "offset": 0,
-                "compressed": False,
-                "original_size": len(content),
-            }, content)
-            receiver.complete_file(manifest.job_id, item.relative_path)
-            receiver.complete_job(manifest.job_id)
-            receiver.record_stream_open(manifest.job_id, item.relative_path)
-            receiver.record_stream_read(
-                manifest.job_id, item.relative_path, 0, len(content)
-            )
-
-            self.assertEqual(
-                controller.status(manifest.job_id).phase,
-                TransferPhase.VERIFYING_RESULT,
-            )
-            receiver.record_performed_drop(manifest.job_id)
-
-        self.assertEqual(
-            controller.status(manifest.job_id).phase,
-            TransferPhase.COMPLETED,
-        )
-
-    def test_empty_file_waits_for_windows_result_before_completing(self):
-        item = FileItem(
-            "empty.bin", ItemType.FILE, 0, 1,
-            hashlib.sha256(b"").hexdigest(),
-        )
-        manifest = Manifest.create([item])
-        controller = TransferController()
-        with tempfile.TemporaryDirectory() as directory:
-            receiver = TransferReceiver(Path(directory), controller=controller)
-            receiver.accept_manifest(manifest.to_wire())
-            receiver.complete_file(manifest.job_id, item.relative_path)
-            receiver.complete_job(manifest.job_id)
-
-            self.assertEqual(
-                controller.status(manifest.job_id).phase,
-                TransferPhase.VERIFYING_RESULT,
-            )
-            receiver.record_performed_drop(manifest.job_id)
-
-        self.assertEqual(
-            controller.status(manifest.job_id).phase,
-            TransferPhase.COMPLETED,
-        )
 
     def test_manifest_chunks_and_completion_publish_verified_file(self):
         content = b"DeskFlow received bytes"
