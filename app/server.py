@@ -101,6 +101,7 @@ class DeskFlowServer:
         self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.switching_to_client = False
         self.pressed_keys = set()
+        self.forwarded_keys = {}
 
     def cancel_transfer(self, job_id):
         return self.transfer_cancellation.request(job_id)
@@ -200,6 +201,7 @@ class DeskFlowServer:
         logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
         self.switching_to_client = False
         self.pressed_keys.clear()
+        self.forwarded_keys.clear()
         if self.on_capture_stop:
             self.on_capture_stop()
         self.input_handler.stop()
@@ -229,9 +231,9 @@ class DeskFlowServer:
     def on_switch_back(self, data):
         # Client hit its return edge
         logger.info("Client signaled switch back.")
+        self._release_forwarded_keys()
         self.switching_to_client = False
         self.paste_coordinator.set_remote_files_available(self.remote_files_available)
-        self.pressed_keys.clear()
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
@@ -287,16 +289,12 @@ class DeskFlowServer:
         
         if has_ctrl and has_alt and has_shift and has_esc:
             logger.warning("EMERGENCY EXIT TRIGGERED! Forcefully disconnecting client and returning control.")
-            for key in sorted(self.pressed_keys - {'esc', 'escape'}):
-                self.control_network.send_message({
-                    'type': 'key_release',
-                    'key': {'type': 'special', 'value': key},
-                })
-            self.pressed_keys.clear()
+            self._release_forwarded_keys()
             self.control_network.disconnect()
             self.data_network.disconnect()
             return
 
+        self.forwarded_keys[self._key_identity(key_data)] = dict(key_data)
         self.control_network.send_message({
             'type': 'key_press',
             'key': key_data
@@ -307,6 +305,7 @@ class DeskFlowServer:
         if val and self.paste_coordinator.on_key_release(val):
             self.pressed_keys.discard(val)
             return
+        self.forwarded_keys.pop(self._key_identity(key_data), None)
         if val in self.pressed_keys:
             self.pressed_keys.discard(val)
             
@@ -314,6 +313,34 @@ class DeskFlowServer:
             'type': 'key_release',
             'key': key_data
         })
+
+    @staticmethod
+    def _key_identity(key_data):
+        return (
+            key_data.get('type'),
+            key_data.get('value'),
+            key_data.get('vk'),
+            key_data.get('scan'),
+            key_data.get('extended'),
+        )
+
+    def _release_forwarded_keys(self):
+        forwarded = getattr(self, 'forwarded_keys', None)
+        if forwarded is None:
+            payloads = [
+                {'type': 'special', 'value': key}
+                for key in sorted(self.pressed_keys - {'esc', 'escape'})
+            ]
+        else:
+            payloads = list(forwarded.values())
+        for key_data in payloads:
+            self.control_network.send_message({
+                'type': 'key_release',
+                'key': key_data,
+            })
+        self.pressed_keys.clear()
+        if forwarded is not None:
+            forwarded.clear()
 
     def on_local_copy(self, snapshot):
         return self.clipboard_sender.submit(snapshot)
