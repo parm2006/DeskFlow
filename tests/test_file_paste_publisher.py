@@ -53,6 +53,29 @@ class VirtualPastePublisherTests(unittest.TestCase):
 
         self.assertEqual(publisher.explorer_start_timeout, 15.0)
 
+    def test_successful_virtual_paste_restores_the_clipboard_it_temporarily_replaced(self):
+        receiver = self.make_receiver()
+        previous_owner = object()
+        virtual_owner = object()
+        restored = []
+
+        def publish(file_set, on_performed_drop=None):
+            on_performed_drop()
+            return virtual_owner
+
+        publisher = VirtualPastePublisher(
+            publish=publish,
+            inject=lambda keyboard: None,
+            capture=lambda: previous_owner,
+            restore=lambda owner, previous: restored.append((owner, previous)),
+            keyboard_factory=object,
+        )
+
+        self.assertTrue(
+            publisher._process(self.manifest("A"), receiver, object())
+        )
+        self.assertEqual(restored, [(virtual_owner, previous_owner)])
+
     @staticmethod
     def manifest(job_id):
         return {

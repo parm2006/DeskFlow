@@ -5,6 +5,79 @@ from app.file_transfer.toast import TransferToast, toast_view
 
 
 class TransferToastViewTests(unittest.TestCase):
+    def test_cancel_hides_immediately_before_any_scheduled_status_refresh(self):
+        events = []
+        toast = TransferToast.__new__(TransferToast)
+        toast.job_id = "job"
+        toast._dismissed_job_id = None
+        toast._hide = lambda: events.append("hidden")
+
+        def cancel(job_id):
+            events.append(("cancel", job_id, toast._dismissed_job_id))
+            return True
+
+        toast.on_cancel = cancel
+        toast._cancel()
+
+        self.assertEqual(
+            events,
+            [("cancel", "job", "job"), "hidden"],
+        )
+
+    def test_scheduled_refresh_cannot_reshow_a_cancelled_job(self):
+        class Root:
+            def after_cancel(self, timer):
+                return None
+
+        class Widget:
+            def configure(self, **kwargs):
+                return None
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return None
+
+            def set(self, value):
+                return None
+
+        class Window(Widget):
+            def __init__(self):
+                self.shown = 0
+
+            def geometry(self, value):
+                return None
+
+            def deiconify(self):
+                self.shown += 1
+
+            def update_idletasks(self):
+                return None
+
+            def winfo_id(self):
+                return 1
+
+            def lift(self):
+                return None
+
+        toast = TransferToast.__new__(TransferToast)
+        toast.root = Root()
+        toast._hide_after = None
+        toast._dismissed_job_id = "job"
+        toast.window = Window()
+        toast.title = Widget()
+        toast.progress = Widget()
+        toast.details = Widget()
+        toast.cancel = Widget()
+        status = TransferStatus(
+            "job", TransferPhase.CANCELLING, "file.bin", 0, 100
+        )
+
+        toast.show(status)
+
+        self.assertEqual(toast.window.shown, 0)
+
     def test_terminal_hide_is_scheduled_even_when_positioning_fails_later(self):
         callbacks = []
 

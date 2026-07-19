@@ -18,6 +18,25 @@ from app.safe_errors import error_name
 logger = logging.getLogger(__name__)
 
 
+def capture_clipboard_owner(get_clipboard=pythoncom.OleGetClipboard):
+    try:
+        return get_clipboard()
+    except pythoncom.com_error:
+        return None
+
+
+def restore_virtual_clipboard_owner(
+    owner,
+    previous_owner,
+    is_current=pythoncom.OleIsCurrentClipboard,
+    restore=pythoncom.OleSetClipboard,
+):
+    if not is_current(owner):
+        return False
+    restore(previous_owner)
+    return True
+
+
 def release_virtual_clipboard_owner(
     owner,
     is_current=pythoncom.OleIsCurrentClipboard,
@@ -79,6 +98,8 @@ class VirtualPastePublisher:
         publish=None,
         inject=None,
         release=None,
+        capture=None,
+        restore=None,
         keyboard_factory=None,
         explorer_start_timeout=15.0,
     ):
@@ -86,7 +107,16 @@ class VirtualPastePublisher:
         self._thread = None
         self._publish = publish or publish_virtual_files
         self._inject = inject or inject_paste_shortcut
-        self._release = release or release_virtual_clipboard_owner
+        self._capture = capture or capture_clipboard_owner
+        if restore is not None:
+            self._restore = restore
+            self._restore_after_accept = True
+        elif release is not None:
+            self._restore = lambda owner, previous: release(owner)
+            self._restore_after_accept = False
+        else:
+            self._restore = restore_virtual_clipboard_owner
+            self._restore_after_accept = True
         self._keyboard_factory = keyboard_factory or KeyboardController
         self.explorer_start_timeout = float(explorer_start_timeout)
         self._owner = None
@@ -151,6 +181,7 @@ class VirtualPastePublisher:
     def _process(self, manifest, receiver, keyboard):
         job_id = manifest["job_id"]
         consumed = threading.Event()
+        previous_owner = self._capture()
 
         def performed_drop():
             consumed.set()
@@ -183,22 +214,24 @@ class VirtualPastePublisher:
             accepted = True
             return True
         finally:
-            if not accepted:
-                self._release_owner(owner)
+            self._restore_owner(owner, previous_owner, retain=accepted)
 
-    def _release_owner(self, owner):
+    def _restore_owner(self, owner, previous_owner, retain=False):
         with self._owner_lock:
             if self._owner is not owner:
                 return False
+            if retain and not self._restore_after_accept:
+                return True
             try:
-                self._release(owner)
+                self._restore(owner, previous_owner)
             except Exception as error:
                 logger.error(
-                    "Could not release virtual clipboard ownership (%s)",
+                    "Could not restore clipboard after virtual paste (%s)",
                     error_name(error),
                 )
             finally:
-                self._owner = None
+                if not retain:
+                    self._owner = None
         return True
 
     @staticmethod

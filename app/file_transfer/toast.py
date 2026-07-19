@@ -58,6 +58,7 @@ class TransferToast:
         self.root = root
         self.on_cancel = on_cancel
         self.job_id = None
+        self._dismissed_job_id = None
         self._hide_after = None
         self.window = ctk.CTkToplevel(root)
         self.window.withdraw()
@@ -80,6 +81,10 @@ class TransferToast:
         self.details.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(1, 8))
 
     def show(self, status):
+        if status.job_id == self._dismissed_job_id:
+            if status.is_terminal:
+                self._dismissed_job_id = None
+            return
         if self._hide_after is not None:
             self.root.after_cancel(self._hide_after)
             self._hide_after = None
@@ -123,7 +128,12 @@ class TransferToast:
 
     def _cancel(self):
         if self.job_id:
-            self.on_cancel(self.job_id)
+            job_id = self.job_id
+            self._dismissed_job_id = job_id
+            if self.on_cancel(job_id):
+                self._hide()
+            else:
+                self._dismissed_job_id = None
 
 
 def _progress_details(status):
