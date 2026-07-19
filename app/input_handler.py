@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from pynput.mouse import Controller as MouseController, Listener as MouseListener, Button
 from pynput.keyboard import Controller as KeyboardController, Listener as KeyboardListener, Key, KeyCode
 from app.safe_errors import error_name
@@ -48,6 +49,8 @@ class InputHandler:
         )
         self.keyboard_listener = None
         self.callbacks = {}
+        self._injected_keys = {}
+        self._injected_keys_lock = threading.Lock()
         
         self.is_captured = False
         self.screen_width = 1920 # Will be updated
@@ -238,31 +241,74 @@ class InputHandler:
 
     def inject_key_press(self, key_data):
         if key_data and key_data.get('type') == 'native_key':
-            self._inject_native_key(key_data, pressed=True)
+            if self._inject_native_key(key_data, pressed=True):
+                self._remember_injected_key(key_data)
             return
         if (
             key_data and key_data.get('type') == 'special'
             and self.special_key_injector is not None
             and self.special_key_injector.press(key_data.get('value'))
         ):
+            self._remember_injected_key(key_data)
             return
         key = self._deserialize_key(key_data)
         if key:
             self.keyboard.press(key)
+            self._remember_injected_key(key_data)
 
     def inject_key_release(self, key_data):
         if key_data and key_data.get('type') == 'native_key':
-            self._inject_native_key(key_data, pressed=False)
+            if self._inject_native_key(key_data, pressed=False):
+                self._forget_injected_key(key_data)
             return
         if (
             key_data and key_data.get('type') == 'special'
             and self.special_key_injector is not None
             and self.special_key_injector.release(key_data.get('value'))
         ):
+            self._forget_injected_key(key_data)
             return
         key = self._deserialize_key(key_data)
         if key:
             self.keyboard.release(key)
+            self._forget_injected_key(key_data)
+
+    @staticmethod
+    def _injected_key_identity(key_data):
+        return (
+            key_data.get('type'),
+            key_data.get('value'),
+            key_data.get('vk'),
+            key_data.get('scan'),
+            key_data.get('extended'),
+        )
+
+    def _ensure_injected_key_state(self):
+        if not hasattr(self, '_injected_keys_lock'):
+            self._injected_keys_lock = threading.Lock()
+            self._injected_keys = {}
+
+    def _remember_injected_key(self, key_data):
+        self._ensure_injected_key_state()
+        with self._injected_keys_lock:
+            self._injected_keys[self._injected_key_identity(key_data)] = dict(key_data)
+
+    def _forget_injected_key(self, key_data):
+        self._ensure_injected_key_state()
+        with self._injected_keys_lock:
+            self._injected_keys.pop(self._injected_key_identity(key_data), None)
+
+    def release_all_injected_keys(self):
+        self._ensure_injected_key_state()
+        with self._injected_keys_lock:
+            keys = tuple(self._injected_keys.values())
+        for key_data in reversed(keys):
+            try:
+                self.inject_key_release(key_data)
+            except Exception as error:
+                logger.error("Could not release injected key (%s)", error_name(error))
+        with self._injected_keys_lock:
+            return not self._injected_keys
 
     def _inject_native_key(self, key_data, pressed):
         virtual_key = key_data.get('vk')

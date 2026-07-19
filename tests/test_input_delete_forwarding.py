@@ -23,6 +23,20 @@ class RecordingKeyboard:
 
 
 class DeleteForwardingTests(unittest.TestCase):
+    def test_shutdown_releases_every_locally_injected_key(self):
+        handler = InputHandler.__new__(InputHandler)
+        handler.keyboard = RecordingKeyboard()
+        handler.special_key_injector = None
+
+        handler.inject_key_press({"type": "special", "value": "ctrl"})
+        handler.inject_key_press({"type": "char", "value": "d"})
+        handler.release_all_injected_keys()
+
+        self.assertEqual(
+            [event[0] for event in handler.keyboard.events],
+            ["press", "press", "release", "release"],
+        )
+
     def test_windows_delete_injector_emits_native_press_and_release(self):
         user32 = RecordingUser32()
         injector = WindowsSpecialKeyInjector(user32)

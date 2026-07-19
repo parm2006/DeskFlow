@@ -1,5 +1,6 @@
 import unittest
 
+from app.client import DeskFlowClient
 from app.server import DeskFlowServer
 
 
@@ -22,6 +23,29 @@ class Coordinator:
 
 
 class EmergencyReleaseTests(unittest.TestCase):
+    def test_client_releases_injected_keys_before_requesting_switch_back(self):
+        events = []
+
+        class Input:
+            client_edge = "left"
+
+            def release_all_injected_keys(self):
+                events.append("release")
+
+        class Network:
+            def send_message(self, message):
+                events.append(message["type"])
+                return True
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.is_active = True
+        client.input_handler = Input()
+        client.control_network = Network()
+
+        client.on_client_edge_hit("left", 0.5)
+
+        self.assertEqual(events, ["release", "switch_back"])
+
     def test_emergency_exit_releases_forwarded_modifiers_before_disconnect(self):
         server = DeskFlowServer.__new__(DeskFlowServer)
         server.pressed_keys = {"ctrl", "alt", "shift"}

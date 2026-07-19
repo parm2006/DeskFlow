@@ -259,6 +259,9 @@ class DeskFlowClient:
         )
 
     def disconnect(self, preserve_failure=False, error=None):
+        input_handler = getattr(self, 'input_handler', None)
+        if input_handler is not None:
+            input_handler.release_all_injected_keys()
         if hasattr(self, '_connect_lock'):
             with self._connect_lock:
                 if self._disconnecting:
@@ -382,6 +385,7 @@ class DeskFlowClient:
         if direction == self.input_handler.client_edge:
             logger.info(f"Hit {direction} edge. Sending switch_back to server.")
             self.is_active = False
+            self.input_handler.release_all_injected_keys()
             self.control_network.send_message({
                 'type': 'switch_back',
                 'ratio': ratio

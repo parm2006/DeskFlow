@@ -502,6 +502,20 @@ class DeskFlowGUI(ctk.CTk):
             logger.info("Overlay lost focus (e.g. Snipping Tool). Switching back to Server.")
             self.server.on_switch_back({'ratio': 0.5})
 
+def run_mainloop(app):
+    try:
+        app.mainloop()
+    finally:
+        try:
+            exists = app.winfo_exists()
+        except AttributeError:
+            exists = True
+        except (RuntimeError, tk.TclError):
+            exists = False
+        if exists:
+            app.on_close()
+
+
 def run_gui():
     import ctypes
     try:
@@ -512,4 +526,4 @@ def run_gui():
         
     ctk.set_appearance_mode("dark")
     app = DeskFlowGUI()
-    app.mainloop()
+    run_mainloop(app)
