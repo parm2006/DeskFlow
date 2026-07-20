@@ -7,7 +7,6 @@ import zlib
 import win32clipboard
 import hashlib
 
-from app.clipboard_offer import ClipboardKind, ClipboardOffer
 from app.safe_errors import error_name
 
 logger = logging.getLogger(__name__)
@@ -55,27 +54,15 @@ def encode_clipboard_snapshot(snapshot):
         if data:
             compressed = zlib.compress(data, level=6)
             payload[key] = base64.b64encode(compressed).decode('utf-8')
-    if not payload:
-        payload['empty'] = True
     return payload
 
 class ClipboardHandler:
-    def __init__(
-        self,
-        on_clipboard_change,
-        on_file_availability=None,
-        on_clipboard_offer=None,
-    ):
+    def __init__(self, on_clipboard_change, on_file_availability=None):
         self.on_clipboard_change = on_clipboard_change
         self.on_file_availability = on_file_availability
-        self.on_clipboard_offer = on_clipboard_offer
         self.file_availability = None
         self._file_drop_format = win32clipboard.CF_HDROP
-        self.last_sequence_num = None
-        self.current_offer = ClipboardOffer(ClipboardKind.UNKNOWN, 0)
-        self._offer_revision = 0
-        self._state_lock = threading.RLock()
-        self._run_generation = 0
+        self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
         self.is_injecting = False
@@ -92,28 +79,18 @@ class ClipboardHandler:
             self.cf_rtf = None
 
     def start(self):
-        if self.is_running:
-            return
-        with self._state_lock:
-            self._run_generation += 1
-            generation = self._run_generation
-            self.is_running = True
-        self.refresh_current_offer(force=True)
-        self.thread = threading.Thread(
-            target=self._poll_clipboard, args=(generation,), daemon=True
-        )
+        self.is_running = True
+        try:
+            self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
+        except:
+            pass
+        self._update_file_availability()
+        self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
         logger.info("Rich Clipboard polling started (Native Zlib Compression)")
 
     def stop(self):
-        with self._state_lock:
-            self.is_running = False
-            self._run_generation += 1
-            thread = self.thread
-        if thread is not None and threading.current_thread() is not thread:
-            thread.join(timeout=1.5)
-        if self.thread is thread:
-            self.thread = None
+        self.is_running = False
         self.wipe_clipboard()
 
     def _get_hash(self, data):
@@ -143,7 +120,6 @@ class ClipboardHandler:
         img_b64 = payload.get('image')
         html_b64 = payload.get('html')
         rtf_b64 = payload.get('rtf')
-        empty_clipboard = payload.get('empty') is True
         
         # Validations
         if text and not isinstance(text, str):
@@ -174,10 +150,7 @@ class ClipboardHandler:
             logger.warning("RTF payload exceeding 5MB limit")
             rtf_b64 = None
 
-        if (
-            not text and not img_b64 and not html_b64 and not rtf_b64
-            and not empty_clipboard
-        ):
+        if not text and not img_b64 and not html_b64 and not rtf_b64:
             self.is_injecting = False
             return
 
@@ -235,16 +208,7 @@ class ClipboardHandler:
 
                         if rtf_data:
                             win32clipboard.SetClipboardData(self.cf_rtf, rtf_data)
-
-                        # EmptyClipboard/SetClipboardData increments the sequence
-                        # while DeskFlow still owns the open clipboard. Capture it
-                        # before another process can write after CloseClipboard.
-                        try:
-                            injected_sequence = (
-                                win32clipboard.GetClipboardSequenceNumber()
-                            )
-                        except Exception:
-                            injected_sequence = None
+                            
                         logger.info("Injected rich clipboard payload (with formatting)")
                         clipboard_updated = True
                         break
@@ -256,6 +220,14 @@ class ClipboardHandler:
                         error_name(error),
                     )
                     time.sleep(0.1)
+
+            if clipboard_updated:
+                try:
+                    injected_sequence = (
+                        win32clipboard.GetClipboardSequenceNumber()
+                    )
+                except Exception:
+                    pass
         finally:
             # Record only DeskFlow's write. A user copy made while Windows settles
             # must remain visible to the polling thread as a newer sequence.
@@ -274,7 +246,6 @@ class ClipboardHandler:
         html_data = None
         rtf_data = None
         
-        read_succeeded = False
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
@@ -291,7 +262,6 @@ class ClipboardHandler:
                     if self.cf_rtf and win32clipboard.IsClipboardFormatAvailable(self.cf_rtf):
                         rtf_data = win32clipboard.GetClipboardData(self.cf_rtf)
                         
-                    read_succeeded = True
                     break
                 finally:
                     win32clipboard.CloseClipboard()
@@ -302,9 +272,6 @@ class ClipboardHandler:
                 )
                 time.sleep(0.1)
                 
-        if not read_succeeded:
-            return None
-
         if text_data:
             snapshot['text'] = text_data
         if dib_data:
@@ -318,88 +285,6 @@ class ClipboardHandler:
                 
         return snapshot
 
-    def _classify_clipboard(self):
-        try:
-            if win32clipboard.IsClipboardFormatAvailable(self._file_drop_format):
-                return ClipboardKind.FILES, None
-        except Exception as error:
-            logger.debug(
-                "Clipboard format classification failed (%s)", error_name(error)
-            )
-            return None
-
-        snapshot = self._read_clipboard()
-        if snapshot is None:
-            return None
-        return ClipboardKind.ORDINARY, snapshot
-
-    def refresh_current_offer(self, force=False):
-        """Classify one Windows clipboard sequence and publish one revision."""
-        try:
-            sequence = win32clipboard.GetClipboardSequenceNumber()
-        except Exception as error:
-            logger.debug("Clipboard sequence read failed (%s)", error_name(error))
-            return None
-
-        with self._state_lock:
-            if not force and sequence == self.last_sequence_num:
-                return self.current_offer
-
-            classified = self._classify_clipboard()
-            if classified is None:
-                logger.info("Clipboard offer classification pending retry")
-                return None
-
-            kind, snapshot = classified
-            self._offer_revision += 1
-            offer = ClipboardOffer(kind, self._offer_revision)
-            self.current_offer = offer
-            self.last_sequence_num = sequence
-            self._set_legacy_file_availability(kind is ClipboardKind.FILES)
-
-        logger.info(
-            "Local clipboard offer classified: kind=%s revision=%d",
-            offer.kind.value,
-            offer.revision,
-        )
-        delivered = True
-        if self.on_clipboard_offer:
-            try:
-                if self.on_clipboard_offer(offer) is False:
-                    delivered = False
-            except Exception as error:
-                delivered = False
-                logger.error(
-                    "Clipboard offer announcement failed (%s)", error_name(error)
-                )
-        if kind is ClipboardKind.ORDINARY:
-            outgoing = dict(snapshot)
-            outgoing["_deskflow_offer_revision"] = offer.revision
-            try:
-                if self.on_clipboard_change(outgoing) is False:
-                    delivered = False
-            except Exception as error:
-                delivered = False
-                logger.error(
-                    "Clipboard payload scheduling failed (%s)", error_name(error)
-                )
-        if not delivered:
-            with self._state_lock:
-                if self.current_offer == offer and self.last_sequence_num == sequence:
-                    self.last_sequence_num = None
-        return offer
-
-    def _set_legacy_file_availability(self, available):
-        if available == self.file_availability:
-            return
-        self.file_availability = available
-        logger.info(
-            "Local clipboard file offer changed: available=%s",
-            str(available).lower(),
-        )
-        if self.on_file_availability:
-            self.on_file_availability(available)
-
     def _update_file_availability(self):
         try:
             available = bool(
@@ -407,7 +292,11 @@ class ClipboardHandler:
             )
         except Exception:
             available = False
-        self._set_legacy_file_availability(available)
+        if available == self.file_availability:
+            return
+        self.file_availability = available
+        if self.on_file_availability:
+            self.on_file_availability(available)
 
     def read_file_selection(self):
         win32clipboard.OpenClipboard()
@@ -419,13 +308,38 @@ class ClipboardHandler:
         finally:
             win32clipboard.CloseClipboard()
 
-    def _poll_clipboard(self, generation):
-        while self.is_running and generation == self._run_generation:
+    def _poll_clipboard(self):
+        while self.is_running:
             try:
                 if self.is_injecting:
                     time.sleep(0.1)
                     continue
-                self.refresh_current_offer()
+                seq = win32clipboard.GetClipboardSequenceNumber()
+                if seq != self.last_sequence_num:
+                    self.last_sequence_num = seq
+                    self._update_file_availability()
+                    
+                    snapshot = self._read_clipboard()
+                    if snapshot:
+                        text = snapshot.get('text')
+                        image = snapshot.get('image')
+                        
+                        text_hash = self._get_hash(text)
+                        image_hash = self._get_hash(image)
+                        
+                        # Only send if there is actual content AND it is different from last sent/injected
+                        is_new_text = text and text_hash != self.last_text_hash
+                        is_new_image = image and image_hash != self.last_image_hash
+                        
+                        if is_new_text or is_new_image:
+                            logger.info("Local rich clipboard change detected, forwarding...")
+                            # Update hashes
+                            if is_new_text:
+                                self.last_text_hash = text_hash
+                            if is_new_image:
+                                self.last_image_hash = image_hash
+                                
+                            self.on_clipboard_change(snapshot)
             except Exception as error:
                 logger.error("Error in poll clipboard (%s)", error_name(error))
             time.sleep(0.5)

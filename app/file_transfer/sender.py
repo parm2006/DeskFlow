@@ -29,7 +29,6 @@ class TransferSender:
         self.controller = controller
         self.clock = clock
         self._verified = {}
-        self._active_send_terminals = {}
         self._paste_jobs = {}
         self._early_paste_terminal = OrderedDict()
         self._early_paste_limit = 256
@@ -46,61 +45,51 @@ class TransferSender:
         with self._paste_lock:
             self._paste_jobs[manifest.job_id] = (label, manifest.total_size)
             early_terminal = self._early_paste_terminal.pop(manifest.job_id, None)
-            self._active_send_terminals[manifest.job_id] = early_terminal
+        self._waiting(manifest, label)
+        if announce_manifest:
+            self.lane.send({"type": "manifest", "manifest": manifest.to_wire()})
         try:
-            self._waiting(manifest, label)
-            if announce_manifest:
-                self.lane.send({"type": "manifest", "manifest": manifest.to_wire()})
             if early_terminal is not None:
                 self._on_paste_progress(early_terminal, b"")
-            self._check_terminal(manifest.job_id)
+                phase = TransferPhase(early_terminal["phase"])
+                if phase is TransferPhase.CANCELLED:
+                    raise TransferCancelled(manifest.job_id)
+                raise DestinationPasteError(
+                    _safe_destination_error_code(early_terminal.get("error_code"))
+                )
             for item in manifest.items:
                 if item.item_type is ItemType.DIRECTORY:
                     continue
                 failure_label = item.relative_path.rsplit("/", 1)[-1]
-                try:
-                    source = sources[item.relative_path]
-                    if source.size != item.size or source.sha256 != item.sha256:
-                        raise ValueError("source snapshot does not match the manifest")
-                except Exception:
-                    self._notify_peer_source_failure(manifest.job_id)
-                    raise
-                chunks = iter(self._read_source_chunks(manifest.job_id, source))
-                try:
-                    first = next(chunks, None)
-                    compress = bool(first) and should_compress(item.relative_path, item.size, first)
-                    offset = 0
-                    for chunk in (() if first is None else (first,)):
-                        self._check_terminal(manifest.job_id)
-                        offset = self._send_chunk(manifest.job_id, item.relative_path, offset, chunk, compress)
-                        bytes_done += len(chunk)
-                        self._check_terminal(manifest.job_id)
-                    for chunk in chunks:
-                        self._check_terminal(manifest.job_id)
-                        offset = self._send_chunk(manifest.job_id, item.relative_path, offset, chunk, compress)
-                        bytes_done += len(chunk)
-                        self._check_terminal(manifest.job_id)
-                finally:
-                    chunks.close()
+                source = sources[item.relative_path]
+                if source.size != item.size or source.sha256 != item.sha256:
+                    raise ValueError("source snapshot does not match the manifest")
+                chunks = iter(source.iter_chunks())
+                first = next(chunks, None)
+                compress = bool(first) and should_compress(item.relative_path, item.size, first)
+                offset = 0
+                for chunk in (() if first is None else (first,)):
+                    self._check_cancelled(manifest.job_id)
+                    offset = self._send_chunk(manifest.job_id, item.relative_path, offset, chunk, compress)
+                    bytes_done += len(chunk)
+                for chunk in chunks:
+                    self._check_cancelled(manifest.job_id)
+                    offset = self._send_chunk(manifest.job_id, item.relative_path, offset, chunk, compress)
+                    bytes_done += len(chunk)
                 self.lane.send({
                     "type": "file_complete",
                     "job_id": manifest.job_id,
                     "relative_path": item.relative_path,
                 })
-                self._check_terminal(manifest.job_id)
             failure_label = label
             verified = threading.Event()
-            with self._paste_lock:
-                self._verified[manifest.job_id] = verified
-            self._check_terminal(manifest.job_id)
+            self._verified[manifest.job_id] = verified
             self.lane.send({"type": "job_complete", "job_id": manifest.job_id})
-            self._check_terminal(manifest.job_id)
             deadline = self.clock() + 30
             while not verified.wait(0.05):
-                self._check_terminal(manifest.job_id)
+                self._check_cancelled(manifest.job_id)
                 if self.clock() >= deadline:
                     raise TimeoutError("destination did not verify the file transfer")
-            self._check_terminal(manifest.job_id)
             self._waiting(manifest, label)
         except TransferCancelled:
             with self._paste_lock:
@@ -116,13 +105,10 @@ class TransferSender:
                 )
             raise
         finally:
-            with self._paste_lock:
-                self._verified.pop(manifest.job_id, None)
-                self._active_send_terminals.pop(manifest.job_id, None)
+            self._verified.pop(manifest.job_id, None)
 
     def _on_verified(self, metadata, payload):
-        with self._paste_lock:
-            event = self._verified.get(metadata.get("job_id"))
+        event = self._verified.get(metadata.get("job_id"))
         if event is not None:
             event.set()
 
@@ -164,7 +150,6 @@ class TransferSender:
             speed = metadata.get("bytes_per_second", 0.0)
             if phase not in {
                 TransferPhase.PASTING,
-                TransferPhase.VERIFYING_RESULT,
                 TransferPhase.COMPLETED,
                 TransferPhase.CANCELLED,
                 TransferPhase.FAILED,
@@ -194,16 +179,7 @@ class TransferSender:
             TransferPhase.FAILED,
         }:
             with self._paste_lock:
-                active_send = job_id in self._active_send_terminals
-                if phase in {TransferPhase.CANCELLED, TransferPhase.FAILED} and active_send:
-                    if self._active_send_terminals[job_id] is None:
-                        self._active_send_terminals[job_id] = dict(metadata)
-                    verified = self._verified.get(job_id)
-                else:
-                    self._paste_jobs.pop(job_id, None)
-                    verified = None
-            if verified is not None:
-                verified.set()
+                self._paste_jobs.pop(job_id, None)
         return True
 
     def _waiting(self, manifest, label):
@@ -234,37 +210,6 @@ class TransferSender:
             encoded.data,
         )
         return offset + len(chunk)
-
-    def _read_source_chunks(self, job_id, source):
-        try:
-            yield from source.iter_chunks()
-        except Exception:
-            self._notify_peer_source_failure(job_id)
-            raise
-
-    def _notify_peer_source_failure(self, job_id):
-        try:
-            self.lane.send({
-                "type": "job_failed",
-                "job_id": job_id,
-                "error_code": "SourceReadFailed",
-            })
-        except Exception:
-            # The source error remains the actionable local failure if the lane
-            # is no longer available to notify the peer.
-            pass
-
-    def _check_terminal(self, job_id):
-        with self._paste_lock:
-            terminal = self._active_send_terminals.get(job_id)
-        if terminal is not None:
-            phase = TransferPhase(terminal["phase"])
-            if phase is TransferPhase.CANCELLED:
-                raise TransferCancelled(job_id)
-            raise DestinationPasteError(
-                _safe_destination_error_code(terminal.get("error_code"))
-            )
-        self._check_cancelled(job_id)
 
     def _check_cancelled(self, job_id):
         if self.controller:

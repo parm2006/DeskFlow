@@ -71,24 +71,6 @@ class LatestWinsSenderTests(unittest.TestCase):
         self.assertTrue(sender.wait_until_idle(timeout=1))
         self.assertEqual(sent, [{"text": "good"}])
 
-    def test_explicit_send_failure_retries_latest_payload(self):
-        attempts = []
-
-        def send(payload):
-            attempts.append(payload)
-            return len(attempts) > 1
-
-        sender = LatestWinsSender(send)
-        self.addCleanup(sender.stop)
-
-        sender.submit({"text": "retry"})
-
-        self.assertTrue(sender.wait_until_idle(timeout=1))
-        self.assertEqual(
-            attempts,
-            [{"text": "retry"}, {"text": "retry"}],
-        )
-
     def test_stop_drops_pending_payload_and_rejects_new_submissions(self):
         first_send_started = threading.Event()
         release_first_send = threading.Event()

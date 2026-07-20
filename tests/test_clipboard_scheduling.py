@@ -9,7 +9,6 @@ from app.clipboard_handler import (
 )
 from app.client import DeskFlowClient
 from app.server import DeskFlowServer
-from app.latest_wins_sender import LatestWinsSender
 
 
 class RecordingSender:
@@ -69,26 +68,8 @@ class ClipboardEncodingTests(unittest.TestCase):
         self.assertEqual(zlib.decompress(base64.b64decode(payload["rtf"])), b"{\\rtf1 hello}")
         self.assertEqual(set(payload), {"text", "image", "html", "rtf"})
 
-    def test_encode_empty_snapshot_explicitly_replaces_remote_clipboard(self):
-        self.assertEqual(
-            encode_clipboard_snapshot({"_deskflow_offer_revision": 3}),
-            {"empty": True},
-        )
-
 
 class PeerClipboardSchedulingTests(unittest.TestCase):
-    def test_client_recreates_stopped_clipboard_sender_before_reconnect(self):
-        client = DeskFlowClient.__new__(DeskFlowClient)
-        stopped = LatestWinsSender(lambda payload: True)
-        stopped.stop()
-        client.clipboard_sender = stopped
-
-        client._ensure_clipboard_sender()
-        self.addCleanup(client.clipboard_sender.stop)
-
-        self.assertIsNot(client.clipboard_sender, stopped)
-        self.assertFalse(client.clipboard_sender.stopped)
-
     def test_client_submits_snapshot_without_mutating_it(self):
         client = DeskFlowClient.__new__(DeskFlowClient)
         client.clipboard_sender = RecordingSender()

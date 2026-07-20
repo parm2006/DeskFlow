@@ -17,11 +17,6 @@ from app.file_transfer.controller import TransferController
 from app.file_transfer.cancellation import TransferCancellation
 from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
-from app.clipboard_offer import (
-    ClipboardKind,
-    ClipboardOffer,
-    RemoteClipboardState,
-)
 from app.latest_wins_sender import LatestWinsSender
 
 logger = logging.getLogger(__name__)
@@ -67,7 +62,6 @@ class DeskFlowServer:
         self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control', d))
         self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
         self.control_network.register_callback('switch_back', self.on_switch_back)
-        self.control_network.register_callback('clipboard_offer', self.on_remote_clipboard_offer)
         self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
         self.control_network.register_callback('file_manifest_request', self.on_file_manifest_request)
         self.control_network.register_callback('file_manifest_response', self.on_file_manifest_response)
@@ -91,19 +85,11 @@ class DeskFlowServer:
         self.input_handler.register_callback('key_release', self.on_key_release)
 
         # Setup clipboard
-        self._clipboard_offer_lock = threading.RLock()
-        self.remote_clipboard_state = RemoteClipboardState()
-        self.local_clipboard_offer = ClipboardOffer(ClipboardKind.UNKNOWN, 0)
-        self.current_clipboard_offer = ClipboardOffer(ClipboardKind.UNKNOWN, 0)
-        self.current_clipboard_origin = None
         self.clipboard = ClipboardHandler(
             on_clipboard_change=self.on_local_copy,
-            on_clipboard_offer=self.on_local_clipboard_offer,
+            on_file_availability=self.on_local_file_availability,
         )
-        self.paste_coordinator = PasteCoordinator(
-            self._request_remote_file_paste,
-            refresh_before_paste=self._refresh_clipboard_before_paste,
-        )
+        self.paste_coordinator = PasteCoordinator(self._request_remote_file_paste)
         self.hotkey_monitor = WindowsPasteHotkeyMonitor(self.paste_coordinator)
         self.local_files_available = False
         self.remote_files_available = False
@@ -111,7 +97,6 @@ class DeskFlowServer:
             self.control_network, self.file_receiver, self.file_publisher,
             TransferSender(self.file_network, controller=self.transfer_controller),
             lambda: snapshot_selection(self.clipboard.read_file_selection()),
-            controller=self.transfer_controller,
         )
         self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.switching_to_client = False
@@ -223,12 +208,6 @@ class DeskFlowServer:
         self.clipboard.stop()
         self.file_network.close()
         self.paste_coordinator.reset()
-        with self._clipboard_offer_lock:
-            self.remote_clipboard_state.reset()
-            self.current_clipboard_offer = ClipboardOffer(
-                ClipboardKind.UNKNOWN, 0
-            )
-            self.current_clipboard_origin = None
         self.hotkey_monitor.stop()
 
     def on_edge_hit(self, direction, ratio):
@@ -236,7 +215,7 @@ class DeskFlowServer:
             if self.switching_to_client:
                 return
             self.switching_to_client = True
-            self._apply_clipboard_interception()
+            self.paste_coordinator.set_remote_files_available(self.local_files_available)
             
             logger.info(f"Hit {direction} edge. Switching to client.")
             self.control_network.send_message({
@@ -254,7 +233,7 @@ class DeskFlowServer:
         logger.info("Client signaled switch back.")
         self._release_forwarded_keys()
         self.switching_to_client = False
-        self._apply_clipboard_interception()
+        self.paste_coordinator.set_remote_files_available(self.remote_files_available)
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
@@ -369,115 +348,13 @@ class DeskFlowServer:
     def _send_clipboard_snapshot(self, snapshot):
         payload = encode_clipboard_snapshot(snapshot)
         payload['type'] = 'clipboard_sync'
-        revision = snapshot.get('_deskflow_offer_revision')
-        if isinstance(revision, int) and not isinstance(revision, bool):
-            payload['offer_revision'] = revision
         return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
-        if 'offer_revision' not in data:
-            self.clipboard.inject(data)
-            return
-        self._ensure_clipboard_offer_state()
-        with self._clipboard_offer_lock:
-            payload = self.remote_clipboard_state.receive_payload(data)
-            if payload is not None and self._remote_payload_is_current(payload):
-                self.clipboard.inject(payload)
-
-    def _ensure_clipboard_offer_state(self):
-        if not hasattr(self, '_clipboard_offer_lock'):
-            self._clipboard_offer_lock = threading.RLock()
-        if not hasattr(self, 'remote_clipboard_state'):
-            self.remote_clipboard_state = RemoteClipboardState()
-        if not hasattr(self, 'local_clipboard_offer'):
-            self.local_clipboard_offer = ClipboardOffer(
-                ClipboardKind.UNKNOWN, 0
-            )
-        if not hasattr(self, 'current_clipboard_offer'):
-            self.current_clipboard_offer = ClipboardOffer(
-                ClipboardKind.UNKNOWN, 0
-            )
-        if not hasattr(self, 'current_clipboard_origin'):
-            self.current_clipboard_origin = None
-
-    def on_local_clipboard_offer(self, offer):
-        if not isinstance(offer, ClipboardOffer) or offer.kind is ClipboardKind.UNKNOWN:
-            return False
-        self._ensure_clipboard_offer_state()
-        with self._clipboard_offer_lock:
-            if offer.revision <= self.local_clipboard_offer.revision:
-                logger.info(
-                    "Server ignored stale local clipboard offer: revision=%d",
-                    offer.revision,
-                )
-                return False
-            self.local_clipboard_offer = offer
-            self.current_clipboard_offer = offer
-            self.current_clipboard_origin = 'local'
-            self._apply_clipboard_interception()
-        logger.info(
-            "Server sending clipboard offer: kind=%s revision=%d",
-            offer.kind.value,
-            offer.revision,
-        )
-        return self.control_network.send_message({
-            'type': 'clipboard_offer',
-            'kind': offer.kind.value,
-            'revision': offer.revision,
-        })
-
-    def on_remote_clipboard_offer(self, data):
-        self._ensure_clipboard_offer_state()
-        with self._clipboard_offer_lock:
-            applied = self.remote_clipboard_state.receive_offer(data)
-            if applied is None:
-                logger.warning("Server ignored stale or malformed clipboard offer")
-                return False
-            offer, payload = applied
-            self.current_clipboard_offer = offer
-            self.current_clipboard_origin = 'remote'
-            self._apply_clipboard_interception()
-            logger.info(
-                "Server received clipboard offer: kind=%s revision=%d",
-                offer.kind.value,
-                offer.revision,
-            )
-            if payload is not None and self._remote_payload_is_current(payload):
-                self.clipboard.inject(payload)
-        return True
-
-    def _remote_payload_is_current(self, payload):
-        return (
-            self.current_clipboard_origin == 'remote'
-            and self.current_clipboard_offer.kind is ClipboardKind.ORDINARY
-            and payload.get('offer_revision')
-            == self.current_clipboard_offer.revision
-        )
-
-    def _apply_clipboard_interception(self):
-        self._ensure_clipboard_offer_state()
-        source_is_other_screen = (
-            self.current_clipboard_origin == 'local'
-            if getattr(self, 'switching_to_client', False)
-            else self.current_clipboard_origin == 'remote'
-        )
-        enabled = (
-            self.current_clipboard_offer.kind is ClipboardKind.FILES
-            and source_is_other_screen
-        )
-        coordinator = getattr(self, 'paste_coordinator', None)
-        if coordinator is not None:
-            coordinator.set_remote_files_available(enabled)
-
-    def _refresh_clipboard_before_paste(self):
-        return self.clipboard.refresh_current_offer() is not None
+        self.clipboard.inject(data)
 
     def on_local_file_availability(self, available):
         self.local_files_available = available is True
-        logger.info(
-            "Server sending local file offer: available=%s",
-            str(self.local_files_available).lower(),
-        )
         if getattr(self, 'switching_to_client', False):
             self.paste_coordinator.set_remote_files_available(self.local_files_available)
         return self.control_network.send_message({
@@ -487,10 +364,6 @@ class DeskFlowServer:
 
     def on_remote_file_availability(self, data):
         self.remote_files_available = data.get('available') is True
-        logger.info(
-            "Server received remote file offer: available=%s",
-            str(self.remote_files_available).lower(),
-        )
         if not getattr(self, 'switching_to_client', False):
             self.paste_coordinator.set_remote_files_available(self.remote_files_available)
 

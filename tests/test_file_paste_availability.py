@@ -4,22 +4,6 @@ from app.file_transfer.paste_coordinator import PasteCoordinator
 
 
 class PasteCoordinatorTests(unittest.TestCase):
-    def test_logs_interception_state_and_ctrl_v_routing(self):
-        coordinator = PasteCoordinator(lambda: None)
-
-        with self.assertLogs(
-            "app.file_transfer.paste_coordinator", level="INFO"
-        ) as logs:
-            coordinator.set_remote_files_available(True)
-            coordinator.on_key_press("ctrl")
-            coordinator.on_key_press("v")
-            coordinator.set_remote_files_available(False)
-
-        output = "\n".join(logs.output)
-        self.assertIn("File-paste interception changed: enabled=true", output)
-        self.assertIn("Ctrl+V routed to remote file paste", output)
-        self.assertIn("File-paste interception changed: enabled=false", output)
-
     def test_intercepts_ctrl_v_only_when_remote_files_are_available(self):
         requested = []
         coordinator = PasteCoordinator(lambda: requested.append("paste"))

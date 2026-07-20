@@ -1,5 +1,3 @@
-import math
-import logging
 import secrets
 import threading
 import time
@@ -7,17 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_MANIFEST_PREPARATION_TIMEOUT = 120.0
-
-
 class RequestState(str, Enum):
     PENDING = "pending"
     ACCEPTED = "accepted"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
-    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -31,23 +23,15 @@ class ManifestRequest:
 
 class ManifestHandshakeQueue:
     def __init__(
-        self, send_request, clock=time.monotonic,
-        timeout_seconds=DEFAULT_MANIFEST_PREPARATION_TIMEOUT,
+        self, send_request, clock=time.monotonic, timeout_seconds=1.0,
         max_pending=8, history_limit=64, timer_factory=threading.Timer,
-        on_state_change=None,
     ):
         self.send_request = send_request
         self.clock = clock
         self.timeout_seconds = float(timeout_seconds)
-        if (
-            not math.isfinite(self.timeout_seconds)
-            or self.timeout_seconds <= 0
-        ):
-            raise ValueError("timeout must be finite and positive")
         self.max_pending = int(max_pending)
         self.history_limit = int(history_limit)
         self.timer_factory = timer_factory
-        self.on_state_change = on_state_change
         self._requests = []
         self._by_id = {}
         self._timers = {}
@@ -73,17 +57,7 @@ class ManifestHandshakeQueue:
             self._requests.append(request)
             self._by_id[request.request_id] = request
             self._schedule_expiry_locked(request)
-        self._notify_state_change(request)
-        try:
-            sent = self.send_request({
-                "type": "file_manifest_request",
-                "request_id": request.request_id,
-            })
-        except Exception as error:
-            self.fail(request.request_id, type(error).__name__)
-            raise
-        if sent is False:
-            self.fail(request.request_id, "manifest request send failed")
+        self.send_request({"type": "file_manifest_request", "request_id": request.request_id})
         return request
 
     def accept(self, request_id, manifest):
@@ -105,23 +79,6 @@ class ManifestHandshakeQueue:
             request.error = error
             self._finish_locked(request, RequestState.FAILED)
             return True
-
-    def cancel(self, request_id, error="cancelled"):
-        with self._lock:
-            request = self._by_id.get(request_id)
-            if request is None or request.state is not RequestState.PENDING:
-                return False
-            request.error = error
-            self._finish_locked(request, RequestState.CANCELLED)
-            return True
-
-    def cancel_all(self, error="disconnected"):
-        with self._lock:
-            cancelled = list(self._by_id.values())
-            for request in cancelled:
-                request.error = error
-                self._finish_locked(request, RequestState.CANCELLED)
-            return cancelled
 
     def expire(self):
         with self._lock:
@@ -164,17 +121,6 @@ class ManifestHandshakeQueue:
         if timer is not None:
             timer.cancel()
         self._trim_history_locked()
-        self._notify_state_change(request)
-
-    def _notify_state_change(self, request):
-        if self.on_state_change is not None:
-            try:
-                self.on_state_change(request)
-            except Exception as error:
-                logger.error(
-                    "Manifest request status callback failed (%s)",
-                    type(error).__name__,
-                )
 
     def _trim_history_locked(self):
         while len(self._requests) > self.history_limit:

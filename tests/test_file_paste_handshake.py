@@ -13,59 +13,9 @@ class FakeClock:
 
 
 class ManifestHandshakeTests(unittest.TestCase):
-    def test_state_callback_reports_pending_and_terminal_timeout(self):
-        clock = FakeClock()
-        observed = []
-        queue = ManifestHandshakeQueue(
-            lambda message: True,
-            clock=clock,
-            timeout_seconds=1.0,
-            on_state_change=lambda request: observed.append(request.state),
-        )
-
-        queue.begin()
-        clock.value += 1.01
-        queue.expire()
-
-        self.assertEqual(
-            observed,
-            [RequestState.PENDING, RequestState.TIMED_OUT],
-        )
-
-    def test_status_callback_failure_does_not_drop_manifest_request(self):
-        sent = []
-
-        def fail_status(_request):
-            raise RuntimeError("UI unavailable")
-
-        queue = ManifestHandshakeQueue(
-            sent.append,
-            on_state_change=fail_status,
-        )
-
-        with self.assertLogs(
-            "app.file_transfer.handshake", level="ERROR"
-        ) as logs:
-            request = queue.begin()
-
-        self.assertEqual(sent[0]["request_id"], request.request_id)
-        self.assertIn("RuntimeError", logs.output[0])
-
-    def test_preparation_timeout_must_be_finite_and_positive(self):
-        for timeout in (0, -1, float("inf"), float("nan")):
-            with self.subTest(timeout=timeout):
-                with self.assertRaisesRegex(
-                    ValueError, "timeout must be finite and positive"
-                ):
-                    ManifestHandshakeQueue(
-                        lambda message: None, timeout_seconds=timeout
-                    )
-
     def test_pending_request_count_is_bounded_and_expiry_releases_capacity(self):
         clock = FakeClock()
-        queue = ManifestHandshakeQueue(
-            lambda message: None, clock=clock, timeout_seconds=1.0
-        )
+        queue = ManifestHandshakeQueue(lambda message: None, clock=clock)
         requests = [queue.begin() for _ in range(8)]
 
         with self.assertRaisesRegex(RuntimeError, "pending manifest request limit"):
@@ -88,15 +38,6 @@ class ManifestHandshakeTests(unittest.TestCase):
 
         self.assertNotIn(request.request_id, queue._by_id)
         self.assertEqual(request.state, RequestState.TIMED_OUT)
-
-    def test_failed_request_send_releases_pending_state_immediately(self):
-        queue = ManifestHandshakeQueue(lambda message: False)
-
-        request = queue.begin()
-
-        self.assertEqual(request.state, RequestState.FAILED)
-        self.assertEqual(request.error, "manifest request send failed")
-        self.assertNotIn(request.request_id, queue._by_id)
 
     def test_each_ctrl_v_creates_distinct_fifo_request(self):
         sent = []
@@ -126,9 +67,7 @@ class ManifestHandshakeTests(unittest.TestCase):
 
     def test_request_times_out_after_one_second_and_late_reply_is_ignored(self):
         clock = FakeClock()
-        queue = ManifestHandshakeQueue(
-            lambda message: None, clock=clock, timeout_seconds=1.0
-        )
+        queue = ManifestHandshakeQueue(lambda message: None, clock=clock)
         request = queue.begin()
         clock.value += 1.01
 
@@ -137,16 +76,6 @@ class ManifestHandshakeTests(unittest.TestCase):
         self.assertEqual(expired, [request])
         self.assertEqual(request.state, RequestState.TIMED_OUT)
         self.assertFalse(queue.accept(request.request_id, {"job_id": "late"}))
-
-    def test_default_deadline_allows_preparation_beyond_one_second(self):
-        clock = FakeClock()
-        queue = ManifestHandshakeQueue(lambda message: None, clock=clock)
-        request = queue.begin()
-        clock.value += 1.01
-
-        self.assertEqual(queue.timeout_seconds, 120.0)
-        self.assertTrue(queue.accept(request.request_id, {"job_id": "ready"}))
-        self.assertEqual(request.state, RequestState.ACCEPTED)
 
     def test_failure_releases_request_without_creating_job(self):
         queue = ManifestHandshakeQueue(lambda message: None)
@@ -157,20 +86,6 @@ class ManifestHandshakeTests(unittest.TestCase):
         self.assertEqual(request.state, RequestState.FAILED)
         self.assertEqual(request.error, "clipboard unavailable")
         self.assertEqual(queue.accepted, ())
-
-    def test_cancellation_releases_requests_and_ignores_late_responses(self):
-        queue = ManifestHandshakeQueue(lambda message: None)
-        requests = [queue.begin(), queue.begin()]
-
-        self.assertTrue(queue.cancel(requests[0].request_id))
-        cancelled = queue.cancel_all()
-
-        self.assertEqual(cancelled, [requests[1]])
-        self.assertEqual(queue._by_id, {})
-        self.assertTrue(
-            all(request.state.value == "cancelled" for request in requests)
-        )
-        self.assertFalse(queue.accept(requests[0].request_id, {"job_id": "late"}))
 
 
 if __name__ == "__main__":

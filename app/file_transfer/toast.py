@@ -10,7 +10,6 @@ from .status import TransferPhase
 
 TOAST_WIDTH = 360
 TOAST_HEIGHT = 104
-FAILURE_FILE_LABEL_LENGTH = 22
 logger = logging.getLogger(__name__)
 
 
@@ -40,23 +39,19 @@ def toast_view(status):
         TransferPhase.CANCELLED: 0,
         TransferPhase.FAILED: 3000,
     }
-    title = titles[status.phase]
-    if status.phase is TransferPhase.PREPARING:
-        details = "Reading file information on the other computer"
-    elif status.phase is TransferPhase.WAITING_FOR_EXPLORER:
+    if status.phase is TransferPhase.WAITING_FOR_EXPLORER:
         details = "Choose any Windows file prompt to continue"
     elif status.phase is TransferPhase.FAILED:
-        title = f"Transfer Failed - {_failure_file_label(status.label)}"
         if status.error_code == "ExplorerStartTimeout":
             message = "Windows Explorer did not accept the paste."
         else:
             message = "DeskFlow could not finish the network transfer."
-        details = message
+        details = f"{_safe_file_label(status.label)} · {message}"
     elif status.phase is TransferPhase.COMPLETED:
         details = f"{_size(status.bytes_done)} / {_size(status.bytes_total)} · Windows finished reading files"
     else:
         details = _progress_details(status)
-    return ToastView(title, details[:80], hide_delays.get(status.phase))
+    return ToastView(titles[status.phase], details[:80], hide_delays.get(status.phase))
 
 
 class TransferToast:
@@ -76,7 +71,6 @@ class TransferToast:
         self.title = ctk.CTkLabel(
             self.window, text="", font=ctk.CTkFont(size=14, weight="bold"), anchor="w", height=20,
         )
-        self._default_title_color = self.title.cget("text_color")
         self.title.grid(row=0, column=0, sticky="ew", padx=(14, 6), pady=(9, 1))
         self.cancel = ctk.CTkButton(
             self.window, text="Cancel", width=68, height=24, command=self._cancel,
@@ -97,12 +91,7 @@ class TransferToast:
             self._hide_after = None
         self.job_id = status.job_id
         view = toast_view(status)
-        title_options = {"text": view.title}
-        if status.phase is TransferPhase.FAILED:
-            title_options["text_color"] = "white"
-        elif hasattr(self, "_default_title_color"):
-            title_options["text_color"] = self._default_title_color
-        self.title.configure(**title_options)
+        self.title.configure(text=view.title)
         percent = status.percent
         self.progress.configure(mode="indeterminate" if percent is None else "determinate")
         if percent is None:
@@ -111,10 +100,7 @@ class TransferToast:
             self.progress.stop()
             self.progress.set(percent / 100.0)
         self.details.configure(text=view.details)
-        cancel_disabled = (
-            status.is_terminal or status.phase is TransferPhase.PREPARING
-        )
-        self.cancel.configure(state="disabled" if cancel_disabled else "normal")
+        self.cancel.configure(state="disabled" if status.is_terminal else "normal")
         self.window.geometry(f"{TOAST_WIDTH}x{TOAST_HEIGHT}")
         self.window.deiconify()
         self.window.update_idletasks()
@@ -175,10 +161,3 @@ def _safe_file_label(value):
     filename = value.replace("\\", "/").rsplit("/", 1)[-1]
     filename = "".join(character for character in filename if character.isprintable()).strip()
     return filename or "File"
-
-
-def _failure_file_label(value):
-    filename = _safe_file_label(value)
-    if len(filename) <= FAILURE_FILE_LABEL_LENGTH:
-        return filename
-    return filename[:FAILURE_FILE_LABEL_LENGTH - 1] + "…"
