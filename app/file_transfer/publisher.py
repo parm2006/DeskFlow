@@ -18,6 +18,12 @@ from app.safe_errors import error_name
 logger = logging.getLogger(__name__)
 
 
+def _clipboard_owner_interface(owner):
+    if isinstance(owner, tuple) and len(owner) == 2:
+        return owner[1]
+    return owner
+
+
 def capture_clipboard_owner(get_clipboard=pythoncom.OleGetClipboard):
     try:
         return get_clipboard()
@@ -31,9 +37,9 @@ def restore_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     restore=pythoncom.OleSetClipboard,
 ):
-    if not is_current(owner):
+    if not is_current(_clipboard_owner_interface(owner)):
         return False
-    restore(previous_owner)
+    restore(_clipboard_owner_interface(previous_owner))
     return True
 
 
@@ -42,7 +48,7 @@ def release_virtual_clipboard_owner(
     is_current=pythoncom.OleIsCurrentClipboard,
     clear=lambda: pythoncom.OleSetClipboard(None),
 ):
-    if not is_current(owner):
+    if not is_current(_clipboard_owner_interface(owner)):
         return False
     clear()
     return True
@@ -182,10 +188,16 @@ class VirtualPastePublisher:
         job_id = manifest["job_id"]
         consumed = threading.Event()
         previous_owner = self._capture()
+        logger.info(
+            "Virtual paste started: files=%s items=%s total_bytes=%s",
+            manifest.get("file_count", 0),
+            len(manifest.get("items", ())),
+            manifest.get("total_size", 0),
+        )
 
-        def performed_drop():
+        def performed_drop(drop_effect=1):
             consumed.set()
-            return receiver.record_performed_drop(job_id)
+            return receiver.record_performed_drop(job_id, drop_effect)
 
         file_set = build_virtual_file_set(
             manifest, receiver, on_stream_open=consumed.set
@@ -212,6 +224,7 @@ class VirtualPastePublisher:
                     return False
                 consumed.wait(0.005)
             accepted = True
+            logger.info("Windows Explorer accepted virtual paste")
             return True
         finally:
             self._restore_owner(owner, previous_owner, retain=accepted)
@@ -223,7 +236,16 @@ class VirtualPastePublisher:
             if retain and not self._restore_after_accept:
                 return True
             try:
-                self._restore(owner, previous_owner)
+                logger.info(
+                    "Virtual clipboard restore starting: previous_owner_present=%s",
+                    str(previous_owner is not None).lower(),
+                )
+                restored = self._restore(owner, previous_owner)
+                logger.info(
+                    "Virtual clipboard restore finished: restored=%s previous_owner_present=%s",
+                    str(restored is not False).lower(),
+                    str(previous_owner is not None).lower(),
+                )
             except Exception as error:
                 logger.error(
                     "Could not restore clipboard after virtual paste (%s)",

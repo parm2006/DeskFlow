@@ -83,11 +83,11 @@ class VirtualFileSetTests(unittest.TestCase):
 
 
 class VirtualFileDataObjectTests(unittest.TestCase):
-    def test_performed_drop_notification_is_accepted_and_reported(self):
+    def test_performed_drop_none_is_decoded_and_reported(self):
         observed = []
         data_object = VirtualFileDataObject(
             VirtualFileSet([VirtualFile("a.txt", 1, lambda: b"a")]),
-            on_performed_drop=lambda: observed.append("done"),
+            on_performed_drop=observed.append,
         )
         performed_drop = win32clipboard.RegisterClipboardFormat("Performed DropEffect")
         medium = pythoncom.STGMEDIUM()
@@ -99,7 +99,25 @@ class VirtualFileDataObjectTests(unittest.TestCase):
             False,
         )
 
-        self.assertEqual(observed, ["done"])
+        self.assertEqual(observed, [0])
+
+    def test_performed_drop_copy_is_decoded_and_reported(self):
+        observed = []
+        data_object = VirtualFileDataObject(
+            VirtualFileSet([VirtualFile("a.txt", 1, lambda: b"a")]),
+            on_performed_drop=observed.append,
+        )
+        performed_drop = win32clipboard.RegisterClipboardFormat("Performed DropEffect")
+        medium = pythoncom.STGMEDIUM()
+        medium.set(pythoncom.TYMED_HGLOBAL, struct.pack("<I", 1))
+
+        data_object.SetData(
+            (performed_drop, None, pythoncom.DVASPECT_CONTENT, -1, pythoncom.TYMED_HGLOBAL),
+            medium,
+            False,
+        )
+
+        self.assertEqual(observed, [1])
 
     def setUp(self):
         pythoncom.OleInitialize()

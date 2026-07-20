@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.file_transfer.status import TransferPhase, TransferStatus
 from app.file_transfer.toast import TransferToast, toast_view
@@ -114,6 +115,19 @@ class TransferToastViewTests(unittest.TestCase):
         self.assertEqual(view.title, "Waiting for Windows Explorer")
         self.assertEqual(view.details, "Choose any Windows file prompt to continue")
 
+    def test_manifest_preparation_explains_the_indeterminate_wait(self):
+        status = TransferStatus(
+            "request", TransferPhase.PREPARING, "Files", 0, 0
+        )
+
+        view = toast_view(status)
+
+        self.assertEqual(view.title, "Preparing files")
+        self.assertEqual(
+            view.details,
+            "Reading file information on the other computer",
+        )
+
     def test_every_terminal_state_has_a_hide_deadline(self):
         for phase in (TransferPhase.COMPLETED, TransferPhase.FAILED, TransferPhase.CANCELLED):
             with self.subTest(phase=phase):
@@ -133,17 +147,19 @@ class TransferToastViewTests(unittest.TestCase):
         view = toast_view(status)
 
         self.assertEqual(
-            view.details,
-            "private-file-name.bin · Windows Explorer did not accept the paste.",
+            view.title,
+            "Transfer Failed - private-file-name.bin",
         )
+        self.assertEqual(view.details, "Windows Explorer did not accept the paste.")
         self.assertEqual(view.hide_after_ms, 3000)
-        self.assertNotIn(r"C:\Users\person\private", view.details)
+        self.assertNotIn(r"C:\Users\person\private", view.title)
+        self.assertNotIn("private-file-name.bin", view.details)
 
-    def test_network_failure_includes_only_the_failed_file_name(self):
+    def test_network_failure_names_the_file_in_a_deterministically_truncated_title(self):
         status = TransferStatus(
             "job",
             TransferPhase.FAILED,
-            "/home/person/private/archive.zip",
+            "/home/person/private/abcdefghijklmnopqrstuvwxyz.zip",
             0,
             100,
             error_code="OSError",
@@ -152,10 +168,79 @@ class TransferToastViewTests(unittest.TestCase):
         view = toast_view(status)
 
         self.assertEqual(
-            view.details,
-            "archive.zip · DeskFlow could not finish the network transfer.",
+            view.title,
+            "Transfer Failed - abcdefghijklmnopqrstu…",
         )
-        self.assertNotIn("/home/person/private", view.details)
+        self.assertEqual(
+            view.details,
+            "DeskFlow could not finish the network transfer.",
+        )
+        self.assertNotIn("/home/person/private", view.title)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz.zip", view.details)
+
+    def test_failed_transfer_renders_the_named_title_in_white(self):
+        class Root:
+            def after(self, delay, callback):
+                return "timer"
+
+        class Widget:
+            def __init__(self):
+                self.configurations = []
+
+            def configure(self, **kwargs):
+                self.configurations.append(kwargs)
+
+            def start(self):
+                return None
+
+            def stop(self):
+                return None
+
+            def set(self, value):
+                return None
+
+        class Window(Widget):
+            def geometry(self, value):
+                return None
+
+            def deiconify(self):
+                return None
+
+            def update_idletasks(self):
+                return None
+
+            def winfo_id(self):
+                return 1
+
+            def lift(self):
+                return None
+
+        toast = TransferToast.__new__(TransferToast)
+        toast.root = Root()
+        toast.job_id = None
+        toast._dismissed_job_id = None
+        toast._hide_after = None
+        toast._default_title_color = "default"
+        toast.window = Window()
+        toast.title = Widget()
+        toast.progress = Widget()
+        toast.details = Widget()
+        toast.cancel = Widget()
+        status = TransferStatus(
+            "job", TransferPhase.FAILED, "archive.zip", 0, 100,
+            error_code="OSError",
+        )
+
+        with patch(
+            "app.file_transfer.toast.place_windows_window_in_work_area",
+            return_value=(0, 0, 360, 104),
+        ):
+            toast.show(status)
+
+        self.assertEqual(
+            toast.title.configurations,
+            [{"text": "Transfer Failed - archive.zip", "text_color": "white"}],
+        )
 
     def test_confirmed_cancellation_hides_immediately(self):
         status = TransferStatus("job", TransferPhase.CANCELLED, "file.bin", 50, 100)

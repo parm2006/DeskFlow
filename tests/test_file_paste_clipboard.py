@@ -5,6 +5,47 @@ from app.clipboard_handler import ClipboardHandler
 
 
 class FileClipboardAvailabilityTests(unittest.TestCase):
+    def test_remote_empty_ordinary_offer_clears_clipboard(self):
+        handler = ClipboardHandler(lambda snapshot: None)
+
+        with (
+            patch("app.clipboard_handler.win32clipboard.OpenClipboard"),
+            patch(
+                "app.clipboard_handler.win32clipboard.EmptyClipboard"
+            ) as empty_clipboard,
+            patch(
+                "app.clipboard_handler.win32clipboard.SetClipboardData"
+            ) as set_data,
+            patch("app.clipboard_handler.win32clipboard.CloseClipboard"),
+            patch(
+                "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+                return_value=False,
+            ),
+            patch(
+                "app.clipboard_handler.win32clipboard.GetClipboardSequenceNumber",
+                return_value=5,
+            ),
+            patch("app.clipboard_handler.time.sleep"),
+        ):
+            handler.inject({"empty": True, "offer_revision": 1})
+
+        empty_clipboard.assert_called_once_with()
+        set_data.assert_not_called()
+
+    def test_logs_privacy_safe_file_availability_transitions(self):
+        handler = ClipboardHandler(lambda snapshot: None)
+
+        with patch(
+            "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+            side_effect=[True, False],
+        ), self.assertLogs("app.clipboard_handler", level="INFO") as logs:
+            handler._update_file_availability()
+            handler._update_file_availability()
+
+        output = "\n".join(logs.output)
+        self.assertIn("Local clipboard file offer changed: available=true", output)
+        self.assertIn("Local clipboard file offer changed: available=false", output)
+
     def test_emits_boolean_only_when_file_availability_changes(self):
         changes = []
         handler = ClipboardHandler(lambda snapshot: None, on_file_availability=changes.append)
@@ -81,6 +122,37 @@ class FileClipboardAvailabilityTests(unittest.TestCase):
                 "app.clipboard_handler.time.sleep",
                 side_effect=user_copies_while_injection_settles,
             ),
+        ):
+            handler.inject({"text": "remote"})
+
+        self.assertEqual(handler.last_sequence_num, 11)
+        self.assertEqual(current_sequence[0], 12)
+
+    def test_user_copy_immediately_after_clipboard_close_is_not_swallowed(self):
+        handler = ClipboardHandler(lambda snapshot: None)
+        handler.last_sequence_num = 10
+        current_sequence = [11]
+
+        def user_copies_after_deskflow_releases_clipboard():
+            current_sequence[0] = 12
+
+        with (
+            patch("app.clipboard_handler.win32clipboard.OpenClipboard"),
+            patch("app.clipboard_handler.win32clipboard.EmptyClipboard"),
+            patch("app.clipboard_handler.win32clipboard.SetClipboardData"),
+            patch(
+                "app.clipboard_handler.win32clipboard.CloseClipboard",
+                side_effect=user_copies_after_deskflow_releases_clipboard,
+            ),
+            patch(
+                "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+                return_value=False,
+            ),
+            patch(
+                "app.clipboard_handler.win32clipboard.GetClipboardSequenceNumber",
+                side_effect=lambda: current_sequence[0],
+            ),
+            patch("app.clipboard_handler.time.sleep"),
         ):
             handler.inject({"text": "remote"})
 

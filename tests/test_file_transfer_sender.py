@@ -1,12 +1,13 @@
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from app.file_transfer.models import FileItem, ItemType, Manifest
 from app.file_transfer.receiver import TransferReceiver
 from app.file_transfer.sender import DestinationPasteError, TransferSender
-from app.file_transfer.source import SourceFile
+from app.file_transfer.source import SourceChangedError, SourceFile
 from app.file_transfer.controller import TransferCancelled, TransferController
 from app.file_transfer.status import TransferPhase
 
@@ -44,6 +45,157 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_remote_failure_stops_active_chunk_send_promptly(self):
+        class FailingLane:
+            def __init__(self):
+                self.callbacks = {}
+                self.sent = []
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                self.sent.append((metadata, payload))
+                if metadata["type"] == "chunk":
+                    for callback in self.callbacks.get("paste_progress", ()):
+                        callback({
+                            "type": "paste_progress",
+                            "job_id": metadata["job_id"],
+                            "phase": "failed",
+                            "bytes_done": 0,
+                            "bytes_total": 12,
+                            "bytes_per_second": 0,
+                            "error_code": "PasteInjectionFailed",
+                        }, b"")
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            source_path.write_bytes(b"abcdefghijkl")
+            source = SourceFile.snapshot(source_path, chunk_size=4)
+            manifest = Manifest.create([
+                FileItem(
+                    "source.bin", ItemType.FILE, source.size,
+                    source.modified_ns, source.sha256,
+                )
+            ])
+            lane = FailingLane()
+            controller = TransferController()
+            started = time.monotonic()
+            errors = []
+
+            self._capture_error(
+                errors,
+                lambda: TransferSender(
+                    lane, controller=controller,
+                    clock=self._verification_timeout_clock(),
+                ).send_job(manifest, {"source.bin": source}),
+            )
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertIsInstance(errors[0], DestinationPasteError)
+        self.assertEqual(str(errors[0]), "PasteInjectionFailed")
+        self.assertEqual(
+            controller.status(manifest.job_id).error_code,
+            "PasteInjectionFailed",
+        )
+        self.assertEqual(
+            len([
+                metadata for metadata, _ in lane.sent
+                if metadata["type"] == "chunk"
+            ]),
+            1,
+        )
+        self.assertNotIn(
+            "job_complete", [metadata["type"] for metadata, _ in lane.sent]
+        )
+
+    def test_remote_cancellation_stops_verification_wait_promptly(self):
+        class CancellingLane:
+            def __init__(self):
+                self.callbacks = {}
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                if metadata["type"] == "job_complete":
+                    for callback in self.callbacks.get("paste_progress", ()):
+                        callback({
+                            "type": "paste_progress",
+                            "job_id": metadata["job_id"],
+                            "phase": "cancelled",
+                            "bytes_done": 0,
+                            "bytes_total": 0,
+                            "bytes_per_second": 0,
+                        }, b"")
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "empty.bin"
+            source_path.write_bytes(b"")
+            source = SourceFile.snapshot(source_path)
+            manifest = Manifest.create([
+                FileItem(
+                    "empty.bin", ItemType.FILE, source.size,
+                    source.modified_ns, source.sha256,
+                )
+            ])
+            started = time.monotonic()
+            errors = []
+
+            self._capture_error(
+                errors,
+                lambda: TransferSender(
+                    CancellingLane(), controller=TransferController(),
+                    clock=self._verification_timeout_clock(),
+                ).send_job(manifest, {"empty.bin": source}),
+            )
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertIsInstance(errors[0], TransferCancelled)
+
+    def test_deleted_source_notifies_peer_with_scoped_failure_frame(self):
+        class RecordingLane:
+            def __init__(self):
+                self.callbacks = {}
+                self.sent = []
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                self.sent.append((metadata, payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "deleted.bin"
+            source_path.write_bytes(b"source bytes")
+            source = SourceFile.snapshot(source_path)
+            manifest = Manifest.create([
+                FileItem(
+                    "deleted.bin", ItemType.FILE, source.size,
+                    source.modified_ns, source.sha256,
+                )
+            ])
+            source_path.unlink()
+            lane = RecordingLane()
+
+            with self.assertRaises(SourceChangedError):
+                TransferSender(lane).send_job(
+                    manifest, {"deleted.bin": source}
+                )
+
+        self.assertEqual(
+            [
+                (metadata, payload)
+                for metadata, payload in lane.sent
+                if metadata["type"] == "job_failed"
+            ],
+            [({
+                "type": "job_failed",
+                "job_id": manifest.job_id,
+                "error_code": "SourceReadFailed",
+            }, b"")],
+        )
+
     def test_multi_file_source_failure_identifies_the_failed_file(self):
         class Lane:
             def __init__(self):
@@ -204,6 +356,11 @@ class TransferSenderTests(unittest.TestCase):
         except Exception as error:
             errors.append(error)
 
+    @staticmethod
+    def _verification_timeout_clock():
+        values = iter((0.0, 31.0))
+        return lambda: next(values, 31.0)
+
     def test_sends_manifest_and_bounded_chunks_that_receiver_verifies(self):
         with tempfile.TemporaryDirectory() as source_directory, tempfile.TemporaryDirectory() as receive_directory:
             source_path = Path(source_directory) / "report.txt"
@@ -309,6 +466,48 @@ class TransferSenderTests(unittest.TestCase):
         self.assertEqual(
             controller.status(JOB_ID).error_code, "ExplorerStartTimeout"
         )
+
+    def test_verifying_result_progress_can_complete_or_cancel(self):
+        for terminal_phase in (TransferPhase.COMPLETED, TransferPhase.CANCELLED):
+            with self.subTest(terminal_phase=terminal_phase):
+                controller = TransferController()
+                lane = type(
+                    "Lane", (),
+                    {
+                        "callbacks": {},
+                        "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb),
+                    },
+                )()
+                sender = TransferSender(lane, controller=controller)
+                sender._paste_jobs[JOB_ID] = ("file.bin", 100)
+                controller.update(
+                    JOB_ID, TransferPhase.PASTING, "file.bin", 75, 100, 10
+                )
+
+                handled = sender._on_paste_progress({
+                    "job_id": JOB_ID,
+                    "phase": "verifying_result",
+                    "bytes_done": 100,
+                    "bytes_total": 100,
+                    "bytes_per_second": 10,
+                }, b"")
+
+                self.assertTrue(handled)
+                self.assertEqual(
+                    controller.status(JOB_ID).phase,
+                    TransferPhase.VERIFYING_RESULT,
+                )
+
+                handled = sender._on_paste_progress({
+                    "job_id": JOB_ID,
+                    "phase": terminal_phase.value,
+                    "bytes_done": 100,
+                    "bytes_total": 100,
+                    "bytes_per_second": 0,
+                }, b"")
+
+                self.assertTrue(handled)
+                self.assertEqual(controller.status(JOB_ID).phase, terminal_phase)
 
     def test_unknown_remote_failure_code_is_normalized_before_status(self):
         controller = TransferController()

@@ -102,3 +102,10 @@ class TransferController:
     def status(self, job_id):
         with self._lock:
             return self._statuses.get(job_id)
+
+    def remove(self, job_id):
+        with self._lock:
+            status = self._statuses.pop(job_id, None)
+            self._cancelled.discard(job_id)
+            self._cancel_events.pop(job_id, None)
+            return status

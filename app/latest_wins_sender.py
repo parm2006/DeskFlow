@@ -29,6 +29,11 @@ class LatestWinsSender:
             self._condition.notify()
             return True
 
+    @property
+    def stopped(self):
+        with self._condition:
+            return self._stopped
+
     def wait_until_idle(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
@@ -58,11 +63,16 @@ class LatestWinsSender:
                 self._pending = None
                 self._sending = True
 
+            retry = False
             try:
-                self._send(payload)
+                retry = self._send(payload) is False
             except Exception as error:
                 logger.error("Latest-wins send failed (%s)", error_name(error))
             finally:
                 with self._condition:
                     self._sending = False
+                    if retry and not self._stopped and self._pending is None:
+                        self._pending = payload
                     self._condition.notify_all()
+                    if retry and not self._stopped:
+                        self._condition.wait(timeout=0.1)

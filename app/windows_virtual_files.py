@@ -171,8 +171,9 @@ class VirtualFileDataObject:
             and index == -1
             and medium_type & pythoncom.TYMED_HGLOBAL
         ):
+            drop_effect = struct.unpack_from("<I", medium.data)[0]
             if self.on_performed_drop is not None:
-                self.on_performed_drop()
+                self.on_performed_drop(drop_effect)
             return None
         raise COMException(description="SetData is not supported", scode=winerror.E_NOTIMPL)
 

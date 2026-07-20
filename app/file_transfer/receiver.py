@@ -10,13 +10,19 @@ from app.safe_errors import error_name
 from .compression import MAX_CHUNK_SIZE, decode_chunk
 from .models import ItemType, Manifest
 from .staging import StagedFile, cleanup_staging_root
-from .validation import validate_manifest, validate_relative_path
+from .validation import (
+    ValidationError,
+    validate_manifest,
+    validate_relative_path,
+    validate_transfer_id,
+)
 from .status import TransferPhase
 from .range_coverage import RangeCoverage
 
 
 logger = logging.getLogger(__name__)
 MAX_ACTIVE_JOBS = 8
+_DROPEFFECT_COPY = 1
 
 class TransferAbortedError(OSError):
     winerror = 1223
@@ -65,6 +71,7 @@ class TransferReceiver:
         lane.register_callback(
             "job_complete", lambda metadata, payload: self.complete_job(metadata["job_id"])
         )
+        lane.register_callback("job_failed", self._on_job_failed)
 
     def accept_manifest(self, wire_manifest):
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
@@ -94,7 +101,7 @@ class TransferReceiver:
             },
             "paste_started": None,
             "network_verified": False,
-            "drop_performed": False,
+            "drop_effect": None,
             "cleanup_generation": 0,
             "last_progress_bytes": -1,
             "last_progress_time": 0.0,
@@ -201,30 +208,58 @@ class TransferReceiver:
             if set(job["completed"]) != expected_files:
                 raise ValueError("job completed before every file was verified")
             job["network_verified"] = True
-        covered = self._paste_covered(job)
-        if covered == job["manifest"].total_size:
-            self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
-        elif covered:
-            self._publish_paste_progress(job_id, TransferPhase.PASTING, covered, force=True)
-        else:
+            covered = self._paste_covered(job)
+            phase = self._paste_phase(job, covered)
+            if phase is TransferPhase.COMPLETED and not any(
+                activity["active"] for activity in job["stream_activity"].values()
+            ):
+                cleanup_generation = self._next_cleanup_generation(job)
+            else:
+                cleanup_generation = None
+        if phase is TransferPhase.WAITING_FOR_EXPLORER:
             self._update_paste(job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
+        else:
+            self._publish_paste_progress(
+                job_id,
+                phase,
+                covered,
+                force=phase in {
+                    TransferPhase.COMPLETED,
+                    TransferPhase.VERIFYING_RESULT,
+                },
+            )
         if self.lane is not None:
             self.lane.send({"type": "job_verified", "job_id": job_id})
+        if cleanup_generation is not None:
+            self._schedule_terminal_cleanup(job_id, cleanup_generation)
 
     def record_stream_read(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
         job = self._jobs[job_id]
-        coverage = job["coverage"][normalized]
-        coverage.add(offset, count)
-        covered = self._paste_covered(job)
-        if job["paste_started"] is None:
-            job["paste_started"] = self.clock()
-        phase = (
-            TransferPhase.COMPLETED
-            if job["network_verified"] and covered == job["manifest"].total_size
-            else TransferPhase.PASTING
+        with job["condition"]:
+            coverage = job["coverage"][normalized]
+            coverage.add(offset, count)
+            covered = self._paste_covered(job)
+            if job["paste_started"] is None:
+                job["paste_started"] = self.clock()
+            phase = self._paste_phase(job, covered)
+            if phase is TransferPhase.COMPLETED and not any(
+                activity["active"] for activity in job["stream_activity"].values()
+            ):
+                cleanup_generation = self._next_cleanup_generation(job)
+            else:
+                cleanup_generation = None
+        self._publish_paste_progress(
+            job_id,
+            phase,
+            covered,
+            force=phase in {
+                TransferPhase.COMPLETED,
+                TransferPhase.VERIFYING_RESULT,
+            },
         )
-        self._publish_paste_progress(job_id, phase, covered, force=phase is TransferPhase.COMPLETED)
+        if cleanup_generation is not None:
+            self._schedule_terminal_cleanup(job_id, cleanup_generation)
 
     def record_stream_open(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)
@@ -246,23 +281,40 @@ class TransferReceiver:
                 return False
             activity["active"] -= 1
             activity["generation"] += 1
-            generation = activity["generation"]
             incomplete = job["coverage"][normalized].covered < job["items"][normalized].size
             if activity["active"]:
                 return True
-            if not incomplete:
-                if job["drop_performed"] and job["network_verified"]:
+            any_active = any(
+                item_activity["active"]
+                for item_activity in job["stream_activity"].values()
+            )
+            cleanup_generation = None
+            abandon_path = normalized if incomplete else None
+            if not incomplete and not any_active:
+                if self._paste_phase(job) is TransferPhase.COMPLETED:
                     cleanup_generation = self._next_cleanup_generation(job)
                 else:
-                    return True
-            else:
-                cleanup_generation = None
+                    abandon_path = next(
+                        (
+                            path for path, coverage in job["coverage"].items()
+                            if coverage.covered < job["items"][path].size
+                        ),
+                        None,
+                    )
+            if abandon_path is None and cleanup_generation is None:
+                return True
+            generation = (
+                None if abandon_path is None
+                else job["stream_activity"][abandon_path]["generation"]
+            )
         if cleanup_generation is not None:
             self._schedule_terminal_cleanup(job_id, cleanup_generation)
             return True
         timer = self.timer_factory(
             self.stream_close_grace,
-            lambda: self._confirm_stream_abandoned(job_id, normalized, generation),
+            lambda: self._confirm_stream_abandoned(
+                job_id, abandon_path, generation
+            ),
         )
         if hasattr(timer, "daemon"):
             timer.daemon = True
@@ -277,24 +329,32 @@ class TransferReceiver:
             activity = job["stream_activity"][relative_path]
             if activity["active"] or activity["generation"] != generation:
                 return False
+            if any(
+                item_activity["active"]
+                for item_activity in job["stream_activity"].values()
+            ):
+                return False
             if job["coverage"][relative_path].covered >= job["items"][relative_path].size:
                 return False
         current = self.controller.status(job_id) if self.controller is not None else None
         if current is not None and current.is_terminal:
             return False
         logger.info("Explorer released an incomplete file stream for job %s", job_id)
-        return self.record_performed_drop(job_id)
+        return self.record_performed_drop(job_id, 0)
 
-    def record_performed_drop(self, job_id):
+    def record_performed_drop(self, job_id, drop_effect):
         job = self._jobs.get(job_id)
         if job is None:
             return False
         with job["condition"]:
-            job["drop_performed"] = True
+            if job["drop_effect"] is not None:
+                return False
+            job["drop_effect"] = drop_effect
             covered = self._paste_covered(job)
+            copy_performed = bool(drop_effect & _DROPEFFECT_COPY)
             phase = (
-                TransferPhase.COMPLETED
-                if job["network_verified"] and covered == job["manifest"].total_size
+                self._paste_phase(job, covered)
+                if copy_performed
                 else TransferPhase.CANCELLED
             )
             if phase is TransferPhase.COMPLETED and not any(
@@ -315,7 +375,7 @@ class TransferReceiver:
             })
         if cleanup_generation is not None:
             self._schedule_terminal_cleanup(job_id, cleanup_generation)
-        elif phase is TransferPhase.CANCELLED:
+        elif not copy_performed:
             self.cancel_job(job_id)
         return True
 
@@ -339,8 +399,7 @@ class TransferReceiver:
             return False
         with job["condition"]:
             if (
-                not job["drop_performed"]
-                or not job["network_verified"]
+                self._paste_phase(job) is not TransferPhase.COMPLETED
                 or job["cleanup_generation"] != generation
                 or any(
                     activity["active"]
@@ -369,8 +428,11 @@ class TransferReceiver:
                 raise TransferAbortedError(reason)
             raise KeyError(job_id)
         item = job["items"][normalized]
+        if count <= 0:
+            return b""
         if offset >= item.size:
             return b""
+        requested = min(count, item.size - offset)
         with job["condition"]:
             while True:
                 if job["error"] is not None:
@@ -380,12 +442,15 @@ class TransferReceiver:
                     staged = completed
                     break
                 staged = job["staged"].get(normalized)
-                if staged is not None and staged.received_size > offset:
+                if (
+                    staged is not None
+                    and staged.received_size >= offset + requested
+                ):
                     break
                 job["condition"].wait()
         # Authenticated decryption and disk I/O must not hold the receiver condition;
         # incoming chunks and cancellation remain responsive during Explorer reads.
-        return staged.read_available(offset, min(count, item.size - offset))
+        return staged.read_available(offset, requested)
 
     def cancel_job(self, job_id):
         job = self._jobs.get(job_id)
@@ -409,6 +474,29 @@ class TransferReceiver:
         return True
 
     def fail_paste(self, job_id, error_code):
+        return self._fail_job(
+            job_id,
+            error_code,
+            "Windows Explorer did not accept the file paste",
+            notify_peer=True,
+        )
+
+    def _on_job_failed(self, metadata, payload):
+        if payload or metadata.get("error_code") != "SourceReadFailed":
+            return False
+        job_id = metadata.get("job_id")
+        try:
+            validate_transfer_id(job_id)
+        except ValidationError:
+            return False
+        return self._fail_job(
+            job_id,
+            "SourceReadFailed",
+            "the source could not read the selected file",
+            notify_peer=False,
+        )
+
+    def _fail_job(self, job_id, error_code, reason, notify_peer):
         job = self._jobs.get(job_id)
         if job is None:
             return False
@@ -424,7 +512,7 @@ class TransferReceiver:
                 completed.abort()
             job["staged"].clear()
             job["completed"].clear()
-            job["error"] = "Windows Explorer did not accept the file paste"
+            job["error"] = reason
             job["condition"].notify_all()
         manifest = job["manifest"]
         if self.controller is not None:
@@ -436,7 +524,7 @@ class TransferReceiver:
                 manifest.total_size,
                 error_code=error_code,
             )
-        if self.lane is not None:
+        if notify_peer and self.lane is not None:
             self._progress_queue.put({
                 "type": "paste_progress",
                 "job_id": job_id,
@@ -446,9 +534,7 @@ class TransferReceiver:
                 "bytes_per_second": 0.0,
                 "error_code": error_code,
             })
-        self._remember_terminal(
-            job_id, "Windows Explorer did not accept the file paste"
-        )
+        self._remember_terminal(job_id, reason)
         if self._jobs.get(job_id) is job:
             self._jobs.pop(job_id, None)
         return True
@@ -480,7 +566,13 @@ class TransferReceiver:
             phase,
             _manifest_label(manifest),
             bytes_done,
-            manifest.total_size if phase is TransferPhase.PASTING or phase is TransferPhase.COMPLETED else 0,
+            manifest.total_size
+            if phase in {
+                TransferPhase.PASTING,
+                TransferPhase.VERIFYING_RESULT,
+                TransferPhase.COMPLETED,
+            }
+            else 0,
             speed,
         )
 
@@ -520,6 +612,23 @@ class TransferReceiver:
     @staticmethod
     def _paste_covered(job):
         return sum(coverage.covered for coverage in job["coverage"].values())
+
+    @classmethod
+    def _paste_phase(cls, job, covered=None):
+        if covered is None:
+            covered = cls._paste_covered(job)
+        total_size = job["manifest"].total_size
+        copy_performed = (
+            job["drop_effect"] is not None
+            and bool(job["drop_effect"] & _DROPEFFECT_COPY)
+        )
+        if job["network_verified"] and copy_performed and covered == total_size:
+            return TransferPhase.COMPLETED
+        if job["network_verified"] and total_size > 0 and covered == total_size:
+            return TransferPhase.VERIFYING_RESULT
+        if covered:
+            return TransferPhase.PASTING
+        return TransferPhase.WAITING_FOR_EXPLORER
 
     def cancel_all(self, reason):
         for job_id, job in tuple(self._jobs.items()):
