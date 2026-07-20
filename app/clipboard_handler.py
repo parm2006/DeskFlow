@@ -5,8 +5,8 @@ import base64
 import binascii
 import zlib
 import win32clipboard
-import hashlib
 
+from app.clipboard_authority import ClipboardKind
 from app.safe_errors import error_name
 
 logger = logging.getLogger(__name__)
@@ -54,20 +54,31 @@ def encode_clipboard_snapshot(snapshot):
         if data:
             compressed = zlib.compress(data, level=6)
             payload[key] = base64.b64encode(compressed).decode('utf-8')
+    if not payload:
+        payload['empty'] = True
     return payload
 
 class ClipboardHandler:
-    def __init__(self, on_clipboard_change, on_file_availability=None):
+    def __init__(
+        self,
+        on_clipboard_change,
+        on_file_availability=None,
+        on_clipboard_kind=None,
+        state_lock=None,
+        poll_interval=0.1,
+    ):
         self.on_clipboard_change = on_clipboard_change
         self.on_file_availability = on_file_availability
+        self.on_clipboard_kind = on_clipboard_kind
+        self._state_lock = state_lock or threading.RLock()
+        self.poll_interval = float(poll_interval)
+        self.active = True
         self.file_availability = None
         self._file_drop_format = win32clipboard.CF_HDROP
         self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
         self.is_injecting = False
-        self.last_text_hash = None
-        self.last_image_hash = None
         try:
             self.cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
             self.cf_rtf = win32clipboard.RegisterClipboardFormat("Rich Text Format")
@@ -78,13 +89,19 @@ class ClipboardHandler:
             self.cf_html = None
             self.cf_rtf = None
 
+    def set_active(self, active):
+        with self._state_lock:
+            self.active = active is True
+
     def start(self):
         self.is_running = True
         try:
             self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
         except:
             pass
-        self._update_file_availability()
+        self._update_file_availability(notify=False)
+        if self.active and self.file_availability and self.on_clipboard_kind:
+            self.on_clipboard_kind(ClipboardKind.FILES)
         self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
         logger.info("Rich Clipboard polling started (Native Zlib Compression)")
@@ -92,13 +109,6 @@ class ClipboardHandler:
     def stop(self):
         self.is_running = False
         self.wipe_clipboard()
-
-    def _get_hash(self, data):
-        if not data:
-            return None
-        if isinstance(data, str):
-            data = data.encode('utf-8', errors='ignore')
-        return hashlib.md5(data).hexdigest()
 
     def wipe_clipboard(self):
         for _ in range(5):
@@ -114,92 +124,101 @@ class ClipboardHandler:
                 time.sleep(0.1)
         
     def inject(self, payload):
+        with self._state_lock:
+            return self._inject_locked(payload)
+
+    def _inject_locked(self, payload):
         self.is_injecting = True
-        
-        text = payload.get('text')
-        img_b64 = payload.get('image')
-        html_b64 = payload.get('html')
-        rtf_b64 = payload.get('rtf')
-        
-        # Validations
-        if text and not isinstance(text, str):
-            logger.warning("Text payload is not a string")
-            text = None
-        elif text and len(text.encode("utf-8")) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("Text payload exceeding 5MB limit")
-            text = None
-            
-        if img_b64 and not isinstance(img_b64, str):
-            logger.warning("Image payload is not a string")
-            img_b64 = None
-        elif img_b64 and len(img_b64) > MAX_IMAGE_CLIPBOARD_BYTES:
-            logger.warning("Image payload exceeding 50MB limit")
-            img_b64 = None
+        try:
+            text = payload.get('text')
+            img_b64 = payload.get('image')
+            html_b64 = payload.get('html')
+            rtf_b64 = payload.get('rtf')
+            empty_clipboard = payload.get('empty') is True
 
-        if html_b64 and not isinstance(html_b64, str):
-            logger.warning("HTML payload is not a string")
-            html_b64 = None
-        elif html_b64 and len(html_b64) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("HTML payload exceeding 5MB limit")
-            html_b64 = None
+            if text and not isinstance(text, str):
+                logger.warning("Text payload is not a string")
+                text = None
+            elif text and len(text.encode("utf-8")) > MAX_RICH_CLIPBOARD_BYTES:
+                logger.warning("Text payload exceeding 5MB limit")
+                text = None
 
-        if rtf_b64 and not isinstance(rtf_b64, str):
-            logger.warning("RTF payload is not a string")
-            rtf_b64 = None
-        elif rtf_b64 and len(rtf_b64) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("RTF payload exceeding 5MB limit")
-            rtf_b64 = None
+            if img_b64 and not isinstance(img_b64, str):
+                logger.warning("Image payload is not a string")
+                img_b64 = None
+            elif img_b64 and len(img_b64) > MAX_IMAGE_CLIPBOARD_BYTES:
+                logger.warning("Image payload exceeding 50MB limit")
+                img_b64 = None
 
-        if not text and not img_b64 and not html_b64 and not rtf_b64:
-            self.is_injecting = False
-            return
+            if html_b64 and not isinstance(html_b64, str):
+                logger.warning("HTML payload is not a string")
+                html_b64 = None
+            elif html_b64 and len(html_b64) > MAX_RICH_CLIPBOARD_BYTES:
+                logger.warning("HTML payload exceeding 5MB limit")
+                html_b64 = None
 
-        # Decompress/decode outside the clipboard lock!
-        dib_data = None
-        if img_b64:
-            try:
+            if rtf_b64 and not isinstance(rtf_b64, str):
+                logger.warning("RTF payload is not a string")
+                rtf_b64 = None
+            elif rtf_b64 and len(rtf_b64) > MAX_RICH_CLIPBOARD_BYTES:
+                logger.warning("RTF payload exceeding 5MB limit")
+                rtf_b64 = None
+
+            if (
+                not text and not img_b64 and not html_b64 and not rtf_b64
+                and not empty_clipboard
+            ):
+                return False
+
+            dib_data = None
+            if img_b64:
                 dib_data = decode_compressed_clipboard_value(
                     img_b64, MAX_IMAGE_CLIPBOARD_BYTES
                 )
-            except Exception as error:
-                logger.error("Error decompressing image (%s)", error_name(error))
-                self.is_injecting = False
-                return
 
-        html_data = None
-        if html_b64 and self.cf_html:
-            try:
+            html_data = None
+            if html_b64 and self.cf_html:
                 html_data = decode_compressed_clipboard_value(
                     html_b64, MAX_RICH_CLIPBOARD_BYTES
                 )
-            except Exception as error:
-                logger.error("Error decompressing HTML (%s)", error_name(error))
 
-        rtf_data = None
-        if rtf_b64 and self.cf_rtf:
-            try:
+            rtf_data = None
+            if rtf_b64 and self.cf_rtf:
                 rtf_data = decode_compressed_clipboard_value(
                     rtf_b64, MAX_RICH_CLIPBOARD_BYTES
                 )
-            except Exception as error:
-                logger.error("Error decompressing RTF (%s)", error_name(error))
 
-        # Record hashes of plain text and image to prevent forwarding back
-        self.last_text_hash = self._get_hash(text)
-        self.last_image_hash = self._get_hash(dib_data)
-
-        injected_sequence = None
-        clipboard_updated = False
-        try:
+            expected_sequence = self.last_sequence_num
+            injected_sequence = None
             for _ in range(5):
                 try:
                     win32clipboard.OpenClipboard()
                     try:
+                        try:
+                            current_sequence = (
+                                win32clipboard.GetClipboardSequenceNumber()
+                            )
+                        except Exception as error:
+                            logger.info(
+                                "Remote clipboard injection rejected: sequence unreadable (%s)",
+                                error_name(error),
+                            )
+                            return False
+                        if (
+                            self.active
+                            and expected_sequence is not None
+                            and current_sequence != expected_sequence
+                        ):
+                            logger.info(
+                                "Remote clipboard injection rejected: newer local sequence"
+                            )
+                            return False
+
                         win32clipboard.EmptyClipboard()
-                        
+
                         if text:
                             win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
-                            
+
                         if dib_data:
                             win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
 
@@ -208,10 +227,13 @@ class ClipboardHandler:
 
                         if rtf_data:
                             win32clipboard.SetClipboardData(self.cf_rtf, rtf_data)
-                            
+
+                        injected_sequence = (
+                            win32clipboard.GetClipboardSequenceNumber()
+                        )
+                        self.last_sequence_num = injected_sequence
                         logger.info("Injected rich clipboard payload (with formatting)")
-                        clipboard_updated = True
-                        break
+                        return True
                     finally:
                         win32clipboard.CloseClipboard()
                 except Exception as error:
@@ -220,22 +242,13 @@ class ClipboardHandler:
                         error_name(error),
                     )
                     time.sleep(0.1)
-
-            if clipboard_updated:
-                try:
-                    injected_sequence = (
-                        win32clipboard.GetClipboardSequenceNumber()
-                    )
-                except Exception:
-                    pass
+            return False
+        except Exception as error:
+            logger.error("Remote clipboard payload rejected (%s)", error_name(error))
+            return False
         finally:
-            # Record only DeskFlow's write. A user copy made while Windows settles
-            # must remain visible to the polling thread as a newer sequence.
-            time.sleep(0.1)
-            if injected_sequence is not None:
-                self.last_sequence_num = injected_sequence
             try:
-                self._update_file_availability()
+                self._update_file_availability(notify=False)
             finally:
                 self.is_injecting = False
 
@@ -245,6 +258,7 @@ class ClipboardHandler:
         dib_data = None
         html_data = None
         rtf_data = None
+        read_succeeded = False
         
         for _ in range(5):
             try:
@@ -261,7 +275,8 @@ class ClipboardHandler:
 
                     if self.cf_rtf and win32clipboard.IsClipboardFormatAvailable(self.cf_rtf):
                         rtf_data = win32clipboard.GetClipboardData(self.cf_rtf)
-                        
+
+                    read_succeeded = True
                     break
                 finally:
                     win32clipboard.CloseClipboard()
@@ -271,7 +286,10 @@ class ClipboardHandler:
                     error_name(error),
                 )
                 time.sleep(0.1)
-                
+
+        if not read_succeeded:
+            return None
+
         if text_data:
             snapshot['text'] = text_data
         if dib_data:
@@ -285,18 +303,66 @@ class ClipboardHandler:
                 
         return snapshot
 
-    def _update_file_availability(self):
+    def _update_file_availability(self, notify=True):
         try:
             available = bool(
                 win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP)
             )
         except Exception:
             available = False
+        self._set_file_availability(available, notify=notify)
+
+    def _set_file_availability(self, available, notify=True):
+        available = available is True
         if available == self.file_availability:
             return
         self.file_availability = available
-        if self.on_file_availability:
+        if notify and self.on_file_availability:
             self.on_file_availability(available)
+
+    def process_current_sequence(self):
+        with self._state_lock:
+            return self._process_current_sequence_locked()
+
+    def _process_current_sequence_locked(self):
+        try:
+            sequence = win32clipboard.GetClipboardSequenceNumber()
+        except Exception:
+            return False
+        if sequence == self.last_sequence_num:
+            return False
+
+        try:
+            files_available = bool(
+                win32clipboard.IsClipboardFormatAvailable(self._file_drop_format)
+            )
+        except Exception:
+            return False
+
+        if files_available:
+            kind = ClipboardKind.FILES
+            snapshot = None
+        else:
+            kind = ClipboardKind.ORDINARY
+            snapshot = self._read_clipboard()
+            if snapshot is None:
+                return False
+
+        self.last_sequence_num = sequence
+        self._set_file_availability(files_available, notify=False)
+        logger.info(
+            "Clipboard sequence classified: sequence=%s active=%s kind=%s",
+            sequence,
+            self.active,
+            kind.value,
+        )
+        if not self.active:
+            return True
+        if self.on_clipboard_kind:
+            self.on_clipboard_kind(kind)
+        if kind is ClipboardKind.ORDINARY:
+            self.on_clipboard_change(snapshot)
+        return True
 
     def read_file_selection(self):
         win32clipboard.OpenClipboard()
@@ -314,32 +380,7 @@ class ClipboardHandler:
                 if self.is_injecting:
                     time.sleep(0.1)
                     continue
-                seq = win32clipboard.GetClipboardSequenceNumber()
-                if seq != self.last_sequence_num:
-                    self.last_sequence_num = seq
-                    self._update_file_availability()
-                    
-                    snapshot = self._read_clipboard()
-                    if snapshot:
-                        text = snapshot.get('text')
-                        image = snapshot.get('image')
-                        
-                        text_hash = self._get_hash(text)
-                        image_hash = self._get_hash(image)
-                        
-                        # Only send if there is actual content AND it is different from last sent/injected
-                        is_new_text = text and text_hash != self.last_text_hash
-                        is_new_image = image and image_hash != self.last_image_hash
-                        
-                        if is_new_text or is_new_image:
-                            logger.info("Local rich clipboard change detected, forwarding...")
-                            # Update hashes
-                            if is_new_text:
-                                self.last_text_hash = text_hash
-                            if is_new_image:
-                                self.last_image_hash = image_hash
-                                
-                            self.on_clipboard_change(snapshot)
+                self.process_current_sequence()
             except Exception as error:
                 logger.error("Error in poll clipboard (%s)", error_name(error))
-            time.sleep(0.5)
+            time.sleep(self.poll_interval)

@@ -52,6 +52,26 @@ class WindowsPasteHotkeyTests(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertEqual(monitor.listener.suppressed, 0)
 
+    def test_physical_ctrl_c_marks_copy_pending_without_suppressing_input(self):
+        requests = []
+        coordinator = PasteCoordinator(lambda: requests.append("paste"))
+        coordinator.set_remote_files_available(True)
+        monitor = WindowsPasteHotkeyMonitor(coordinator)
+        monitor.listener = FakeListener()
+
+        self.assertTrue(
+            monitor.filter_event(monitor.WM_KEYDOWN, KeyData(monitor.VK_CONTROL))
+        )
+        self.assertTrue(
+            monitor.filter_event(monitor.WM_KEYDOWN, KeyData(monitor.VK_C))
+        )
+        self.assertTrue(
+            monitor.filter_event(monitor.WM_KEYDOWN, KeyData(monitor.VK_V))
+        )
+
+        self.assertEqual(requests, [])
+        self.assertEqual(monitor.listener.suppressed, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

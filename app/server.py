@@ -17,6 +17,7 @@ from app.file_transfer.controller import TransferController
 from app.file_transfer.cancellation import TransferCancellation
 from app.input_handler import InputHandler
 from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
+from app.clipboard_authority import ClipboardAuthority, ClipboardKind
 from app.latest_wins_sender import LatestWinsSender
 
 logger = logging.getLogger(__name__)
@@ -85,10 +86,14 @@ class DeskFlowServer:
         self.input_handler.register_callback('key_release', self.on_key_release)
 
         # Setup clipboard
+        self._clipboard_authority_lock = threading.RLock()
+        self.clipboard_authority = ClipboardAuthority(local_active=True)
         self.clipboard = ClipboardHandler(
             on_clipboard_change=self.on_local_copy,
-            on_file_availability=self.on_local_file_availability,
+            on_clipboard_kind=self.on_local_clipboard_kind,
+            state_lock=self._clipboard_authority_lock,
         )
+        self.clipboard.set_active(True)
         self.paste_coordinator = PasteCoordinator(self._request_remote_file_paste)
         self.hotkey_monitor = WindowsPasteHotkeyMonitor(self.paste_coordinator)
         self.local_files_available = False
@@ -200,6 +205,7 @@ class DeskFlowServer:
     def on_client_disconnected(self):
         logger.info("Client disconnected, stopping edge detection and wiping clipboard.")
         self.switching_to_client = False
+        self._reset_clipboard_authority(local_active=True)
         self.pressed_keys.clear()
         self.forwarded_keys.clear()
         if self.on_capture_stop:
@@ -215,6 +221,7 @@ class DeskFlowServer:
             if self.switching_to_client:
                 return
             self.switching_to_client = True
+            self._set_local_clipboard_active(False)
             self.paste_coordinator.set_remote_files_available(self.local_files_available)
             
             logger.info(f"Hit {direction} edge. Switching to client.")
@@ -233,6 +240,7 @@ class DeskFlowServer:
         logger.info("Client signaled switch back.")
         self._release_forwarded_keys()
         self.switching_to_client = False
+        self._set_local_clipboard_active(True)
         self.paste_coordinator.set_remote_files_available(self.remote_files_available)
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
@@ -351,7 +359,56 @@ class DeskFlowServer:
         return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
-        self.clipboard.inject(data)
+        self._ensure_clipboard_authority()
+        with self._clipboard_authority_lock:
+            if not self.clipboard_authority.may_accept_remote_ordinary():
+                logger.info("Server rejected delayed remote clipboard payload")
+                return False
+            if self.clipboard.inject(data) is not True:
+                return False
+            return self.clipboard_authority.note_remote_copy(
+                ClipboardKind.ORDINARY
+            )
+
+    def _ensure_clipboard_authority(self):
+        if not hasattr(self, '_clipboard_authority_lock'):
+            self._clipboard_authority_lock = threading.RLock()
+        if not hasattr(self, 'clipboard_authority'):
+            self.clipboard_authority = ClipboardAuthority(
+                local_active=not getattr(self, 'switching_to_client', False)
+            )
+
+    def _set_local_clipboard_active(self, active):
+        self._ensure_clipboard_authority()
+        with self._clipboard_authority_lock:
+            self.clipboard_authority.set_local_active(active)
+            clipboard = getattr(self, 'clipboard', None)
+            if callable(getattr(clipboard, 'set_active', None)):
+                clipboard.set_active(active)
+
+    def _reset_clipboard_authority(self, local_active):
+        self._ensure_clipboard_authority()
+        with self._clipboard_authority_lock:
+            self.clipboard_authority.set_local_active(local_active)
+            self.clipboard_authority.reset()
+            clipboard = getattr(self, 'clipboard', None)
+            if callable(getattr(clipboard, 'set_active', None)):
+                clipboard.set_active(local_active)
+
+    def on_local_clipboard_kind(self, kind):
+        self._ensure_clipboard_authority()
+        kind = ClipboardKind(kind)
+        with self._clipboard_authority_lock:
+            if not self.clipboard_authority.note_local_copy(kind):
+                logger.info(
+                    "Server ignored inactive clipboard change: kind=%s",
+                    kind.value,
+                )
+                return False
+            self.local_files_available = kind is ClipboardKind.FILES
+            self.paste_coordinator.confirm_files_available(False)
+        logger.info("Server acknowledged local clipboard copy: kind=%s", kind.value)
+        return self.on_local_file_availability(self.local_files_available)
 
     def on_local_file_availability(self, available):
         self.local_files_available = available is True
@@ -363,9 +420,22 @@ class DeskFlowServer:
         })
 
     def on_remote_file_availability(self, data):
-        self.remote_files_available = data.get('available') is True
-        if not getattr(self, 'switching_to_client', False):
-            self.paste_coordinator.set_remote_files_available(self.remote_files_available)
+        available = data.get('available') is True
+        kind = ClipboardKind.FILES if available else ClipboardKind.ORDINARY
+        self._ensure_clipboard_authority()
+        with self._clipboard_authority_lock:
+            if not self.clipboard_authority.note_remote_copy(kind):
+                logger.info(
+                    "Server rejected delayed remote clipboard status: kind=%s",
+                    kind.value,
+                )
+                return False
+            self.remote_files_available = available
+            if getattr(self, 'switching_to_client', False):
+                self.paste_coordinator.confirm_files_available(False)
+            else:
+                self.paste_coordinator.confirm_files_available(available)
+        return True
 
     def _request_remote_file_paste(self):
         if getattr(self, 'switching_to_client', False):

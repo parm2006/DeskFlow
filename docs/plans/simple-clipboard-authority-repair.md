@@ -282,17 +282,17 @@ the handoff.
 
 ## Done criteria
 
-- [ ] One Ctrl+C creates exactly one acknowledged active copy event in tests.
-- [ ] Same-machine Ctrl+V executes no clipboard or network work in the hook.
-- [ ] Newer local content survives delayed remote data before and after polling.
-- [ ] Inactive physical clipboard changes never become authoritative.
-- [ ] Startup and reconnect send no ordinary clipboard content.
-- [ ] File-to-ordinary and ordinary-to-file transitions route correctly.
-- [ ] Focused, file, and full suites pass.
-- [ ] Compilation and `git diff --check` pass.
-- [ ] Static search finds none of the rejected architectures.
-- [ ] Only in-scope source, test, plan, design, and handoff files changed.
-- [ ] Physical validation remains pending and FIFO remains unimplemented.
+- [x] One Ctrl+C creates exactly one acknowledged active copy event in tests.
+- [x] Same-machine Ctrl+V executes no clipboard or network work in the hook.
+- [x] Newer local content survives delayed remote data before and after polling.
+- [x] Inactive physical clipboard changes never become authoritative.
+- [x] Startup and reconnect send no ordinary clipboard content.
+- [x] File-to-ordinary and ordinary-to-file transitions route correctly.
+- [x] Focused, file, and full suites pass (`300` tests on 2026-07-20).
+- [x] Compilation and `git diff --check` pass.
+- [x] Static search finds none of the rejected architectures.
+- [x] Only in-scope source, test, plan, design, and handoff files changed.
+- [x] Physical validation remains pending and FIFO remains unimplemented.
 
 ## STOP conditions
 

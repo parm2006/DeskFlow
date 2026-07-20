@@ -9,6 +9,7 @@ class WindowsPasteHotkeyMonitor:
     VK_CONTROL = 0x11
     VK_LCONTROL = 0xA2
     VK_RCONTROL = 0xA3
+    VK_C = 0x43
     VK_V = 0x56
     LLKHF_INJECTED = 0x10
 
@@ -60,6 +61,8 @@ class WindowsPasteHotkeyMonitor:
             return "ctrl_r"
         if vk_code == self.VK_CONTROL:
             return "ctrl"
+        if vk_code == self.VK_C:
+            return "c"
         if vk_code == self.VK_V:
             return "v"
         return None

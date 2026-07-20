@@ -68,8 +68,26 @@ class ClipboardEncodingTests(unittest.TestCase):
         self.assertEqual(zlib.decompress(base64.b64decode(payload["rtf"])), b"{\\rtf1 hello}")
         self.assertEqual(set(payload), {"text", "image", "html", "rtf"})
 
+    def test_encode_empty_copy_uses_explicit_wire_marker(self):
+        self.assertEqual(encode_clipboard_snapshot({}), {"empty": True})
+
 
 class PeerClipboardSchedulingTests(unittest.TestCase):
+    def test_client_reconnect_recreates_stopped_clipboard_sender(self):
+        class StoppedSender:
+            stopped = True
+
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.clipboard_sender = StoppedSender()
+        client._send_clipboard_snapshot = lambda snapshot: True
+
+        client._ensure_clipboard_sender()
+        try:
+            self.assertNotIsInstance(client.clipboard_sender, StoppedSender)
+            self.assertTrue(client.on_local_copy({"text": "after reconnect"}))
+        finally:
+            client.clipboard_sender.stop()
+
     def test_client_submits_snapshot_without_mutating_it(self):
         client = DeskFlowClient.__new__(DeskFlowClient)
         client.clipboard_sender = RecordingSender()

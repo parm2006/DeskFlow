@@ -38,6 +38,74 @@ class PasteCoordinatorTests(unittest.TestCase):
         self.assertFalse(coordinator.remote_files_available)
         self.assertFalse(coordinator.on_key_press("v"))
 
+    def test_ctrl_c_pending_copy_allows_native_paste_after_file_copy(self):
+        requested = []
+        now = [10.0]
+        coordinator = PasteCoordinator(
+            lambda: requested.append("paste"),
+            clock=lambda: now[0],
+        )
+        coordinator.set_remote_files_available(True)
+
+        self.assertFalse(coordinator.on_key_press("ctrl"))
+        self.assertFalse(coordinator.on_key_press("c"))
+        self.assertFalse(coordinator.on_key_press("v"))
+
+        self.assertEqual(requested, [])
+
+    def test_confirmed_ordinary_copy_disables_file_interception(self):
+        requested = []
+        coordinator = PasteCoordinator(lambda: requested.append("paste"))
+        coordinator.set_remote_files_available(True)
+        coordinator.on_key_press("ctrl")
+        coordinator.on_key_press("c")
+
+        coordinator.confirm_files_available(False)
+
+        self.assertFalse(coordinator.copy_pending)
+        self.assertFalse(coordinator.on_key_press("v"))
+        self.assertEqual(requested, [])
+
+    def test_confirmed_file_copy_enables_file_interception(self):
+        requested = []
+        coordinator = PasteCoordinator(lambda: requested.append("paste"))
+        coordinator.on_key_press("ctrl")
+        coordinator.on_key_press("c")
+
+        coordinator.confirm_files_available(True)
+
+        self.assertFalse(coordinator.copy_pending)
+        self.assertTrue(coordinator.on_key_press("v"))
+        self.assertEqual(requested, ["paste"])
+
+    def test_unconfirmed_copy_intent_expires_to_previous_file_state(self):
+        requested = []
+        now = [20.0]
+        coordinator = PasteCoordinator(
+            lambda: requested.append("paste"),
+            clock=lambda: now[0],
+            copy_pending_timeout=0.25,
+        )
+        coordinator.set_remote_files_available(True)
+        coordinator.on_key_press("ctrl")
+        coordinator.on_key_press("c")
+
+        now[0] = 20.3
+
+        self.assertTrue(coordinator.on_key_press("v"))
+        self.assertEqual(requested, ["paste"])
+
+    def test_reset_clears_pending_copy_state(self):
+        coordinator = PasteCoordinator(lambda: None)
+        coordinator.set_remote_files_available(True)
+        coordinator.on_key_press("ctrl")
+        coordinator.on_key_press("c")
+
+        coordinator.reset()
+
+        self.assertFalse(coordinator.copy_pending)
+        self.assertFalse(coordinator.remote_files_available)
+
 
 if __name__ == "__main__":
     unittest.main()
