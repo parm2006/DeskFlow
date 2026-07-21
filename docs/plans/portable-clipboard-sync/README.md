@@ -8,7 +8,7 @@ Execute in the order below. Each executor must read its plan fully, work test-fi
 
 | Plan | Title | Effort | Depends on | Status |
 |---|---|---|---|---|
-| [001](001-build-bounded-ordered-snapshot.md) | Build the bounded ordered clipboard snapshot | M | — | TODO |
+| [001](001-build-bounded-ordered-snapshot.md) | Build the bounded ordered clipboard snapshot | M | — | DONE |
 | [002](002-add-windows-ordered-clipboard-adapter.md) | Add ordered Windows capture and publication | L | 001 | TODO |
 | [003](003-integrate-and-validate-portable-sync.md) | Integrate v2 sync and validate Docs/Word | L | 001, 002 | TODO |
 
