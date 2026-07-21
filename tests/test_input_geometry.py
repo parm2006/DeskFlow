@@ -27,6 +27,12 @@ class InputGeometryTests(unittest.TestCase):
         self.assertLess(positions["top"][1], 1080 - 2)
         self.assertGreater(positions["bottom"][1], 0)
 
+    def test_client_entry_clamps_corner_position_to_ten_pixels(self):
+        self.assertEqual(client_entry_position("right", 1920, 1080, 0.0), (1, 10))
+        self.assertEqual(client_entry_position("left", 1920, 1080, 1.0), (1917, 1069))
+        self.assertEqual(client_entry_position("bottom", 1920, 1080, 0.0), (10, 1))
+        self.assertEqual(client_entry_position("top", 1920, 1080, 1.0), (1909, 1077))
+
     def test_overlay_geometry_uses_work_area_instead_of_fullscreen(self):
         self.assertEqual(work_area_geometry((0, 0, 1920, 1040)), "1920x1040+0+0")
         self.assertEqual(work_area_geometry((-1920, 20, 0, 1080)), "1920x1060-1920+20")

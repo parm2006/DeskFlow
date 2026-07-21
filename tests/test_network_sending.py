@@ -22,6 +22,28 @@ class OverlapDetectingSocket:
 
 
 class NetworkSendingTests(unittest.TestCase):
+    def test_heartbeat_disconnects_when_peer_stops_responding(self):
+        class Socket:
+            def __init__(self):
+                self.sent = []
+
+            def sendall(self, data):
+                self.sent.append(data)
+
+            def shutdown(self, how):
+                pass
+
+            def close(self):
+                pass
+
+        disconnected = threading.Event()
+        node = NetworkNode(heartbeat_interval=0.01, heartbeat_timeout=0.03)
+        node.register_callback("disconnected", lambda data: disconnected.set())
+        node._attach_socket(Socket())
+
+        self.assertTrue(disconnected.wait(0.5))
+        self.assertFalse(node.connected)
+
     def test_oversized_local_message_is_rejected_without_disconnect(self):
         class Socket:
             def __init__(self):

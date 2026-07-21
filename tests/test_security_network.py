@@ -30,6 +30,9 @@ class FakeSocket:
     def __init__(self):
         self.closed = False
 
+    def sendall(self, data):
+        pass
+
     def shutdown(self, how):
         pass
 

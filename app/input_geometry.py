@@ -1,5 +1,5 @@
 def client_entry_position(
-    direction, width, height, ratio, edge_inset=1, ratio_margin=96
+    direction, width, height, ratio, edge_inset=1, ratio_margin=10
 ):
     horizontal = max(
         ratio_margin, min(width - ratio_margin - 1, int(width * ratio))

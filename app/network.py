@@ -7,6 +7,7 @@ import socket
 import ssl
 import struct
 import threading
+import time
 from enum import Enum
 
 from app.crypto import load_identity
@@ -141,7 +142,7 @@ def _write_message(conn, value):
 
 
 class NetworkNode:
-    def __init__(self):
+    def __init__(self, heartbeat_interval=2.0, heartbeat_timeout=6.0):
         self.sock = None
         self.connected = False
         self.authenticated = False
@@ -150,6 +151,11 @@ class NetworkNode:
         self._send_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._generation = 0
+        self._heartbeat_interval = float(heartbeat_interval)
+        self._heartbeat_timeout = float(heartbeat_timeout)
+        self._heartbeat_stop = threading.Event()
+        self._last_received = 0.0
+        self._heartbeat_thread = None
 
     def register_callback(self, event_type, callback):
         self.callbacks.setdefault(event_type, []).append(callback)
@@ -177,13 +183,24 @@ class NetworkNode:
     def _attach_socket(self, conn):
         with self._state_lock:
             previous = self.sock
+            previous_stop = self._heartbeat_stop
             self._generation += 1
             generation = self._generation
             self.sock = conn
             self.connected = True
             self.authenticated = True
+            self._last_received = time.monotonic()
+            self._heartbeat_stop = threading.Event()
+            heartbeat_stop = self._heartbeat_stop
+        previous_stop.set()
         if previous is not None and previous is not conn:
             self._close_socket(previous)
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(conn, generation, heartbeat_stop),
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
         return generation
 
     def _is_current(self, conn, generation):
@@ -217,7 +234,15 @@ class NetworkNode:
         try:
             while self._is_current(conn, generation):
                 message = _read_message(conn)
+                with self._state_lock:
+                    if self.sock is conn and self._generation == generation:
+                        self._last_received = time.monotonic()
                 event_type = message.get("type")
+                if event_type == "__deskflow_heartbeat__":
+                    self.send_message({"type": "__deskflow_heartbeat_ack__"})
+                    continue
+                if event_type == "__deskflow_heartbeat_ack__":
+                    continue
                 if isinstance(event_type, str) and event_type:
                     self.trigger_callbacks(event_type, message)
                 else:
@@ -226,6 +251,22 @@ class NetworkNode:
             pass
         finally:
             self._disconnect_socket(conn, generation)
+
+    def _heartbeat_loop(self, conn, generation, stop_event):
+        while not stop_event.wait(self._heartbeat_interval):
+            with self._state_lock:
+                if not (
+                    self.sock is conn
+                    and self._generation == generation
+                    and self.connected
+                ):
+                    return
+                last_received = self._last_received
+            if time.monotonic() - last_received > self._heartbeat_timeout:
+                self._disconnect_socket(conn, generation)
+                return
+            if not self.send_message({"type": "__deskflow_heartbeat__"}):
+                return
 
     def _disconnect_socket(self, conn, generation):
         with self._state_lock:
@@ -236,6 +277,7 @@ class NetworkNode:
             self.sock = None
             self.connected = False
             self.authenticated = False
+            self._heartbeat_stop.set()
         self._close_socket(conn)
         if was_connected:
             self.trigger_callbacks("disconnected", {})
