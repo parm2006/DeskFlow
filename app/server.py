@@ -16,7 +16,8 @@ from app.file_transfer.sender import TransferSender
 from app.file_transfer.controller import TransferController
 from app.file_transfer.cancellation import TransferCancellation
 from app.input_handler import InputHandler
-from app.clipboard_handler import ClipboardHandler, encode_clipboard_snapshot
+from app.clipboard_handler import ClipboardHandler
+from app.clipboard_formats import encode_clipboard_message
 from app.latest_wins_sender import LatestWinsSender
 
 logger = logging.getLogger(__name__)
@@ -343,11 +344,10 @@ class DeskFlowServer:
             forwarded.clear()
 
     def on_local_copy(self, snapshot):
-        return self.clipboard_sender.submit(snapshot)
+        return self.clipboard_sender.submit({"snapshot": snapshot})
 
-    def _send_clipboard_snapshot(self, snapshot):
-        payload = encode_clipboard_snapshot(snapshot)
-        payload['type'] = 'clipboard_sync'
+    def _send_clipboard_snapshot(self, work):
+        payload = encode_clipboard_message(work["snapshot"])
         return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):

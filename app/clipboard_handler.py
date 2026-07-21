@@ -1,82 +1,30 @@
 import threading
 import time
 import logging
-import base64
-import binascii
-import zlib
 import win32clipboard
-import hashlib
 
 from app.safe_errors import error_name
+from app.clipboard_formats import ClipboardPayloadError, decode_clipboard_message
+from app.windows_clipboard import ClipboardAccessError, WindowsClipboardAdapter
 
 logger = logging.getLogger(__name__)
 
-MAX_RICH_CLIPBOARD_BYTES = 5 * 1024 * 1024
-MAX_IMAGE_CLIPBOARD_BYTES = 50 * 1024 * 1024
-
-
-class ClipboardPayloadError(ValueError):
-    pass
-
-
-def decode_compressed_clipboard_value(value, max_plaintext_bytes):
-    if not isinstance(value, str):
-        raise ClipboardPayloadError("compressed clipboard value must be text")
-    if not isinstance(max_plaintext_bytes, int) or max_plaintext_bytes < 0:
-        raise ValueError("clipboard plaintext limit must be non-negative")
-    try:
-        compressed = base64.b64decode(value, validate=True)
-        decoder = zlib.decompressobj()
-        plaintext = decoder.decompress(compressed, max_plaintext_bytes + 1)
-    except (binascii.Error, ValueError, zlib.error) as error:
-        raise ClipboardPayloadError("compressed clipboard value is invalid") from error
-    if (
-        len(plaintext) > max_plaintext_bytes
-        or not decoder.eof
-        or decoder.unconsumed_tail
-        or decoder.unused_data
-    ):
-        raise ClipboardPayloadError(
-            "compressed clipboard value exceeds its plaintext limit"
-        )
-    return plaintext
-
-
-def encode_clipboard_snapshot(snapshot):
-    """Encode a raw clipboard snapshot using DeskFlow's existing wire schema."""
-    payload = {}
-    text = snapshot.get('text')
-    if text:
-        payload['text'] = text
-
-    for key in ('image', 'html', 'rtf'):
-        data = snapshot.get(key)
-        if data:
-            compressed = zlib.compress(data, level=6)
-            payload[key] = base64.b64encode(compressed).decode('utf-8')
-    return payload
-
 class ClipboardHandler:
-    def __init__(self, on_clipboard_change, on_file_availability=None):
+    def __init__(
+        self,
+        on_clipboard_change,
+        on_file_availability=None,
+        clipboard_adapter=None,
+    ):
         self.on_clipboard_change = on_clipboard_change
         self.on_file_availability = on_file_availability
+        self.clipboard_adapter = clipboard_adapter or WindowsClipboardAdapter()
         self.file_availability = None
         self._file_drop_format = win32clipboard.CF_HDROP
         self.last_sequence_num = 0
         self.is_running = False
         self.thread = None
         self.is_injecting = False
-        self.last_text_hash = None
-        self.last_image_hash = None
-        try:
-            self.cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
-            self.cf_rtf = win32clipboard.RegisterClipboardFormat("Rich Text Format")
-        except Exception as error:
-            logger.error(
-                "Failed to register custom formats (%s)", error_name(error)
-            )
-            self.cf_html = None
-            self.cf_rtf = None
 
     def start(self):
         self.is_running = True
@@ -93,13 +41,6 @@ class ClipboardHandler:
         self.is_running = False
         self.wipe_clipboard()
 
-    def _get_hash(self, data):
-        if not data:
-            return None
-        if isinstance(data, str):
-            data = data.encode('utf-8', errors='ignore')
-        return hashlib.md5(data).hexdigest()
-
     def wipe_clipboard(self):
         for _ in range(5):
             try:
@@ -114,176 +55,93 @@ class ClipboardHandler:
                 time.sleep(0.1)
         
     def inject(self, payload):
+        try:
+            snapshot = decode_clipboard_message(payload)
+        except ClipboardPayloadError as error:
+            logger.warning(
+                "Remote clipboard snapshot rejected (%s)",
+                error_name(error),
+            )
+            return False
+
         self.is_injecting = True
-        
-        text = payload.get('text')
-        img_b64 = payload.get('image')
-        html_b64 = payload.get('html')
-        rtf_b64 = payload.get('rtf')
-        
-        # Validations
-        if text and not isinstance(text, str):
-            logger.warning("Text payload is not a string")
-            text = None
-        elif text and len(text.encode("utf-8")) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("Text payload exceeding 5MB limit")
-            text = None
-            
-        if img_b64 and not isinstance(img_b64, str):
-            logger.warning("Image payload is not a string")
-            img_b64 = None
-        elif img_b64 and len(img_b64) > MAX_IMAGE_CLIPBOARD_BYTES:
-            logger.warning("Image payload exceeding 50MB limit")
-            img_b64 = None
-
-        if html_b64 and not isinstance(html_b64, str):
-            logger.warning("HTML payload is not a string")
-            html_b64 = None
-        elif html_b64 and len(html_b64) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("HTML payload exceeding 5MB limit")
-            html_b64 = None
-
-        if rtf_b64 and not isinstance(rtf_b64, str):
-            logger.warning("RTF payload is not a string")
-            rtf_b64 = None
-        elif rtf_b64 and len(rtf_b64) > MAX_RICH_CLIPBOARD_BYTES:
-            logger.warning("RTF payload exceeding 5MB limit")
-            rtf_b64 = None
-
-        if not text and not img_b64 and not html_b64 and not rtf_b64:
-            self.is_injecting = False
-            return
-
-        # Decompress/decode outside the clipboard lock!
-        dib_data = None
-        if img_b64:
-            try:
-                dib_data = decode_compressed_clipboard_value(
-                    img_b64, MAX_IMAGE_CLIPBOARD_BYTES
-                )
-            except Exception as error:
-                logger.error("Error decompressing image (%s)", error_name(error))
-                self.is_injecting = False
-                return
-
-        html_data = None
-        if html_b64 and self.cf_html:
-            try:
-                html_data = decode_compressed_clipboard_value(
-                    html_b64, MAX_RICH_CLIPBOARD_BYTES
-                )
-            except Exception as error:
-                logger.error("Error decompressing HTML (%s)", error_name(error))
-
-        rtf_data = None
-        if rtf_b64 and self.cf_rtf:
-            try:
-                rtf_data = decode_compressed_clipboard_value(
-                    rtf_b64, MAX_RICH_CLIPBOARD_BYTES
-                )
-            except Exception as error:
-                logger.error("Error decompressing RTF (%s)", error_name(error))
-
-        # Record hashes of plain text and image to prevent forwarding back
-        self.last_text_hash = self._get_hash(text)
-        self.last_image_hash = self._get_hash(dib_data)
-
         injected_sequence = None
         clipboard_updated = False
+        publication_attempted = False
         try:
             for _ in range(5):
                 try:
                     win32clipboard.OpenClipboard()
-                    try:
-                        win32clipboard.EmptyClipboard()
-                        
-                        if text:
-                            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
-                            
-                        if dib_data:
-                            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, dib_data)
-
-                        if html_data:
-                            win32clipboard.SetClipboardData(self.cf_html, html_data)
-
-                        if rtf_data:
-                            win32clipboard.SetClipboardData(self.cf_rtf, rtf_data)
-                            
-                        logger.info("Injected rich clipboard payload (with formatting)")
-                        clipboard_updated = True
-                        break
-                    finally:
-                        win32clipboard.CloseClipboard()
                 except Exception as error:
                     logger.debug(
                         "Clipboard locked during inject, retrying (%s)",
                         error_name(error),
                     )
                     time.sleep(0.1)
-
-            if clipboard_updated:
+                    continue
                 try:
-                    injected_sequence = (
-                        win32clipboard.GetClipboardSequenceNumber()
-                    )
-                except Exception:
-                    pass
+                    publication_attempted = True
+                    try:
+                        self.clipboard_adapter.publish_open_clipboard(snapshot)
+                    except (ClipboardPayloadError, ClipboardAccessError) as error:
+                        logger.warning(
+                            "Remote clipboard publication failed (%s)",
+                            error_name(error),
+                        )
+                        return False
+                    clipboard_updated = True
+                    try:
+                        injected_sequence = (
+                            win32clipboard.GetClipboardSequenceNumber()
+                        )
+                    except Exception:
+                        pass
+                finally:
+                    win32clipboard.CloseClipboard()
+                logger.info("Injected rich clipboard payload (with formatting)")
+                break
+
+            return clipboard_updated
         finally:
-            # Record only DeskFlow's write. A user copy made while Windows settles
-            # must remain visible to the polling thread as a newer sequence.
-            time.sleep(0.1)
-            if injected_sequence is not None:
-                self.last_sequence_num = injected_sequence
             try:
-                self._update_file_availability()
+                if clipboard_updated:
+                    # Record only DeskFlow's write. A user copy made while
+                    # Windows settles must remain visible as a newer sequence.
+                    time.sleep(0.1)
+                    if injected_sequence is not None:
+                        self.last_sequence_num = injected_sequence
+                if publication_attempted:
+                    self._update_file_availability()
             finally:
                 self.is_injecting = False
 
     def _read_clipboard(self):
-        snapshot = {}
-        text_data = None
-        dib_data = None
-        html_data = None
-        rtf_data = None
-        
         for _ in range(5):
             try:
                 win32clipboard.OpenClipboard()
                 try:
-                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
-                        text_data = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
-                        
-                    if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
-                        dib_data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
-
-                    if self.cf_html and win32clipboard.IsClipboardFormatAvailable(self.cf_html):
-                        html_data = win32clipboard.GetClipboardData(self.cf_html)
-
-                    if self.cf_rtf and win32clipboard.IsClipboardFormatAvailable(self.cf_rtf):
-                        rtf_data = win32clipboard.GetClipboardData(self.cf_rtf)
-                        
-                    break
+                    return self.clipboard_adapter.capture_open_clipboard()
                 finally:
                     win32clipboard.CloseClipboard()
+            except ClipboardPayloadError as error:
+                logger.warning(
+                    "Local clipboard snapshot rejected (%s)",
+                    error_name(error),
+                )
+                return None
+            except ClipboardAccessError as error:
+                logger.warning(
+                    "Local clipboard capture failed (%s)",
+                    error_name(error),
+                )
+                return None
             except Exception as error:
                 logger.debug(
                     "Clipboard locked during read, retrying (%s)",
                     error_name(error),
                 )
                 time.sleep(0.1)
-                
-        if text_data:
-            snapshot['text'] = text_data
-        if dib_data:
-            snapshot['image'] = dib_data
-
-        if html_data:
-            snapshot['html'] = html_data
-
-        if rtf_data:
-            snapshot['rtf'] = rtf_data
-                
-        return snapshot
+        return None
 
     def _update_file_availability(self):
         try:
@@ -316,30 +174,19 @@ class ClipboardHandler:
                     continue
                 seq = win32clipboard.GetClipboardSequenceNumber()
                 if seq != self.last_sequence_num:
-                    self.last_sequence_num = seq
-                    self._update_file_availability()
-                    
-                    snapshot = self._read_clipboard()
-                    if snapshot:
-                        text = snapshot.get('text')
-                        image = snapshot.get('image')
-                        
-                        text_hash = self._get_hash(text)
-                        image_hash = self._get_hash(image)
-                        
-                        # Only send if there is actual content AND it is different from last sent/injected
-                        is_new_text = text and text_hash != self.last_text_hash
-                        is_new_image = image and image_hash != self.last_image_hash
-                        
-                        if is_new_text or is_new_image:
-                            logger.info("Local rich clipboard change detected, forwarding...")
-                            # Update hashes
-                            if is_new_text:
-                                self.last_text_hash = text_hash
-                            if is_new_image:
-                                self.last_image_hash = image_hash
-                                
-                            self.on_clipboard_change(snapshot)
+                    self._process_clipboard_sequence(seq)
             except Exception as error:
                 logger.error("Error in poll clipboard (%s)", error_name(error))
             time.sleep(0.5)
+
+    def _process_clipboard_sequence(self, sequence):
+        if sequence == self.last_sequence_num:
+            return
+        self.last_sequence_num = sequence
+        self._update_file_availability()
+        if self.file_availability:
+            return
+        snapshot = self._read_clipboard()
+        if snapshot:
+            logger.info("Local rich clipboard change detected, forwarding...")
+            self.on_clipboard_change(snapshot)
