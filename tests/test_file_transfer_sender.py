@@ -44,6 +44,83 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_sliding_window_bounds_bytes_without_stop_and_wait(self):
+        class AcknowledgingLane:
+            supports_chunk_ack = True
+
+            def __init__(self):
+                self.callbacks = {}
+                self.sent = []
+                self.chunk_sent = threading.Event()
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                self.sent.append((metadata, payload))
+                if metadata["type"] == "chunk":
+                    self.chunk_sent.set()
+                elif metadata["type"] == "job_complete":
+                    for callback in self.callbacks.get("job_verified", ()):
+                        callback({
+                            "type": "job_verified",
+                            "job_id": metadata["job_id"],
+                        }, b"")
+
+            def acknowledge(self, metadata):
+                for callback in self.callbacks.get("chunk_received", ()):
+                    callback({
+                        "type": "chunk_received",
+                        "job_id": metadata["job_id"],
+                        "relative_path": metadata["relative_path"],
+                        "offset": metadata["offset"],
+                    }, b"")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "paced.bin"
+            path.write_bytes(b"abcdefghijkl")
+            source = SourceFile.snapshot(path, chunk_size=4)
+            manifest = Manifest.create([
+                FileItem(
+                    "paced.bin", ItemType.FILE, source.size,
+                    source.modified_ns, source.sha256,
+                )
+            ])
+            lane = AcknowledgingLane()
+            sender = TransferSender(lane, max_in_flight_bytes=8)
+            errors = []
+            worker = threading.Thread(
+                target=lambda: self._capture_error(
+                    errors,
+                    lambda: sender.send_job(manifest, {"paced.bin": source}),
+                )
+            )
+
+            worker.start()
+            self.assertTrue(lane.chunk_sent.wait(1))
+            for _ in range(100):
+                chunks = [
+                    entry for entry in lane.sent
+                    if entry[0]["type"] == "chunk"
+                ]
+                if len(chunks) >= 2:
+                    break
+                threading.Event().wait(0.005)
+            self.assertEqual(len(chunks), 2)
+
+            lane.chunk_sent.clear()
+            lane.acknowledge(chunks[0][0])
+            self.assertTrue(lane.chunk_sent.wait(1))
+            chunks = [entry for entry in lane.sent if entry[0]["type"] == "chunk"]
+            self.assertEqual(len(chunks), 3)
+
+            lane.acknowledge(chunks[1][0])
+            lane.acknowledge(chunks[2][0])
+            worker.join(1)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+
     def test_multi_file_source_failure_identifies_the_failed_file(self):
         class Lane:
             def __init__(self):

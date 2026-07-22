@@ -149,7 +149,15 @@ class VirtualFileDataObject:
             medium.set(pythoncom.TYMED_HGLOBAL, self.file_set.descriptor_bytes())
             return medium
 
-        stream = self.file_set.content_stream(index)
+        try:
+            stream = self.file_set.content_stream(index)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1223:
+                raise COMException(
+                    description="the file operation was cancelled",
+                    scode=-2147023673,
+                ) from None
+            raise
         medium.set(pythoncom.TYMED_ISTREAM, stream)
         return medium
 

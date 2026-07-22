@@ -21,6 +21,7 @@ class FakeClipboardApi:
             "HTML Format": 101,
             "Rich Text Format": 102,
             "PNG": 103,
+            "Chromium Web Custom MIME Data Format": 104,
         }
         self.enumerated = []
         self.text = "hello"
@@ -111,8 +112,29 @@ class WindowsClipboardRegistryTests(unittest.TestCase):
 
         self.assertEqual(
             api.registered,
-            ["HTML Format", "Rich Text Format", "PNG"],
+            [
+                "HTML Format",
+                "Rich Text Format",
+                "PNG",
+                "Chromium Web Custom MIME Data Format",
+            ],
         )
+
+    def test_captures_and_publishes_bounded_chromium_web_custom_data(self):
+        api = FakeClipboardApi()
+        format_id = api.registered_ids["Chromium Web Custom MIME Data Format"]
+        memory = FakeMemoryReader({format_id: b"docs-object-data"})
+        adapter = WindowsClipboardAdapter(api, memory)
+        api.enumerated = [format_id]
+
+        snapshot = adapter.capture_open_clipboard()
+        adapter.publish_open_clipboard(snapshot)
+
+        self.assertEqual(
+            snapshot.entries,
+            (ClipboardEntry("chromium_web_custom", b"docs-object-data"),),
+        )
+        self.assertEqual(api.set_calls, [(format_id, b"docs-object-data")])
 
     def test_registration_failure_names_only_the_stable_kind(self):
         api = FakeClipboardApi()

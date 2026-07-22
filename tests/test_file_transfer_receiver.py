@@ -14,6 +14,50 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_attached_receiver_acknowledges_a_persisted_chunk(self):
+        class Lane:
+            def __init__(self):
+                self.callbacks = {}
+                self.sent = []
+
+            def register_callback(self, name, callback):
+                self.callbacks.setdefault(name, []).append(callback)
+
+            def send(self, metadata, payload=b""):
+                self.sent.append((metadata, payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            content = b"acknowledged"
+            item = FileItem(
+                "safe.bin", ItemType.FILE, len(content), 1,
+                hashlib.sha256(content).hexdigest(),
+            )
+            manifest = Manifest.create([item])
+            lane = Lane()
+            receiver = TransferReceiver(Path(directory))
+            receiver.attach(lane)
+            receiver.accept_manifest(manifest.to_wire())
+            try:
+                for callback in lane.callbacks["chunk"]:
+                    callback({
+                        "type": "chunk",
+                        "job_id": manifest.job_id,
+                        "relative_path": "safe.bin",
+                        "offset": 0,
+                        "compressed": False,
+                        "original_size": len(content),
+                    }, content)
+                sent = list(lane.sent)
+            finally:
+                receiver.cancel_all("test cleanup")
+
+            self.assertEqual(sent, [({
+                "type": "chunk_received",
+                "job_id": manifest.job_id,
+                "relative_path": "safe.bin",
+                "offset": 0,
+            }, b"")])
+
     def test_active_manifest_count_is_bounded_and_cancel_releases_capacity(self):
         item = FileItem(
             "empty.bin", ItemType.FILE, 0, 1, hashlib.sha256(b"").hexdigest()
@@ -144,6 +188,65 @@ class TransferReceiverTests(unittest.TestCase):
             callbacks.pop()()
 
         self.assertNotEqual(controller.status(manifest.job_id).phase, TransferPhase.CANCELLED)
+
+    def test_opening_another_file_invalidates_pending_multi_file_cancellation(self):
+        callbacks = []
+
+        class Timer:
+            def __init__(self, delay, callback):
+                callbacks.append(callback)
+
+            def start(self):
+                return None
+
+        items = [
+            FileItem("first.bin", ItemType.FILE, 4, 1, "0" * 64),
+            FileItem("second.bin", ItemType.FILE, 4, 1, "1" * 64),
+        ]
+        manifest = Manifest.create(items)
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(
+                Path(directory), controller=controller, timer_factory=Timer
+            )
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.record_stream_open(manifest.job_id, "first.bin")
+            receiver.record_stream_read(manifest.job_id, "first.bin", 0, 2)
+            receiver.record_stream_close(manifest.job_id, "first.bin")
+            receiver.record_stream_open(manifest.job_id, "second.bin")
+
+            callbacks.pop(0)()
+
+            self.assertIn(manifest.job_id, receiver._jobs)
+            self.assertNotEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.CANCELLED,
+            )
+            receiver.cancel_job(manifest.job_id)
+
+    def test_late_stream_open_uses_controlled_terminal_error(self):
+        item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.cancel_job(manifest.job_id)
+
+            with self.assertRaises(TransferAbortedError):
+                receiver.record_stream_open(manifest.job_id, item.relative_path)
+
+    def test_late_stream_read_uses_controlled_terminal_error(self):
+        item = FileItem("copy.bin", ItemType.FILE, 4, 1, "0" * 64)
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.cancel_job(manifest.job_id)
+
+            with self.assertRaises(TransferAbortedError):
+                receiver.record_stream_read(
+                    manifest.job_id, item.relative_path, 0, 1
+                )
 
     def test_paste_progress_updates_are_rate_limited(self):
         size = 2 * 1024 * 1024

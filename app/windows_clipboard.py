@@ -67,6 +67,10 @@ class WindowsClipboardAdapter:
             ("html", "HTML Format"),
             ("rtf", "Rich Text Format"),
             ("png", "PNG"),
+            (
+                "chromium_web_custom",
+                "Chromium Web Custom MIME Data Format",
+            ),
         ):
             try:
                 registered[kind] = clipboard_api.RegisterClipboardFormat(name)
@@ -79,6 +83,7 @@ class WindowsClipboardAdapter:
             registered["html"]: "html",
             registered["rtf"]: "rtf",
             registered["png"]: "png",
+            registered["chromium_web_custom"]: "chromium_web_custom",
             clipboard_api.CF_DIB: "dib",
             clipboard_api.CF_DIBV5: "dibv5",
         }

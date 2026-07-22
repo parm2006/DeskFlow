@@ -43,6 +43,19 @@ class ClipboardSnapshotTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             snapshot.entries = ()
 
+    def test_bounded_chromium_web_custom_data_round_trips(self):
+        snapshot = ClipboardSnapshot([
+            ClipboardEntry("chromium_web_custom", b"bounded-browser-data")
+        ])
+
+        decoded = decode_clipboard_message(encode_clipboard_message(snapshot))
+
+        self.assertEqual(decoded, snapshot)
+        self.assertEqual(
+            clipboard_formats.FORMAT_LIMITS["chromium_web_custom"],
+            5 * clipboard_formats.MIB,
+        )
+
     def test_entry_rejects_unknown_kind_and_non_bytes_data(self):
         with self.assertRaises(ClipboardPayloadError):
             ClipboardEntry("private_format", b"secret")
@@ -75,9 +88,9 @@ class ClipboardSnapshotTests(unittest.TestCase):
             with self.assertRaises(ClipboardPayloadError):
                 ClipboardSnapshot(entries)
 
-    def test_snapshot_rejects_more_than_six_entries_first(self):
+    def test_snapshot_rejects_more_than_seven_entries_first(self):
         with self.assertRaisesRegex(ClipboardPayloadError, "too many"):
-            ClipboardSnapshot([object()] * 7)
+            ClipboardSnapshot([object()] * 8)
 
 
 class ClipboardCodecTests(unittest.TestCase):

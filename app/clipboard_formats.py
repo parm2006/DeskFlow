@@ -10,6 +10,7 @@ FORMAT_LIMITS = {
     "unicode_text": 5 * MIB,
     "html": 5 * MIB,
     "rtf": 5 * MIB,
+    "chromium_web_custom": 5 * MIB,
     "png": 32 * MIB,
     "dib": 32 * MIB,
     "dibv5": 32 * MIB,

@@ -85,6 +85,8 @@ def authenticate_client_connection(sock, expected_fingerprint, token, session_id
 
 
 class _FileLane:
+    supports_chunk_ack = True
+
     def __init__(self):
         self.sock = None
         self._callbacks = {}

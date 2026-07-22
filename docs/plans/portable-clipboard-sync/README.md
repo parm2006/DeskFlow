@@ -24,6 +24,11 @@ Status values: TODO, IN PROGRESS, DONE, BLOCKED, or SUPERSEDED.
 ## Reconciliation log
 
 - **2026-07-21**: Initial plans written. Next: 001.
+- **2026-07-21**: Physical testing on `b9f64cc` passed mixed Google Docs text,
+  images, tables, fonts, and sizing, but exposed lost line breaks, failed
+  image-only copies, and missing Docs image layout state. Added the one fixed,
+  bounded Chromium Windows web-custom format for the next physical test; no
+  arbitrary registered-format support was added.
 
 ## Considered and rejected
 

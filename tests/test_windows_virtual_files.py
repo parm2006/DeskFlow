@@ -130,6 +130,28 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         self.assertEqual(medium.tymed, pythoncom.TYMED_ISTREAM)
         self.assertEqual(medium.data.Read(3), b"two")
 
+    def test_data_object_maps_cancelled_stream_open_to_com_error(self):
+        class CancelledOpen(OSError):
+            winerror = 1223
+
+        file_set = VirtualFileSet([
+            VirtualFile(
+                "cancelled.bin",
+                1,
+                None,
+                open_stream=lambda: (_ for _ in ()).throw(
+                    CancelledOpen("private cancellation detail")
+                ),
+            )
+        ])
+        data_object = VirtualFileDataObject(file_set)
+
+        with self.assertRaises(COMException) as raised:
+            data_object.GetData(data_object.content_format_etc(0))
+
+        self.assertEqual(raised.exception.hresult, -2147023673)
+        self.assertNotIn("private", str(raised.exception))
+
     def test_com_gateway_enumerates_descriptor_and_contents_formats(self):
         wrapped = util.wrap(self.data_object, pythoncom.IID_IDataObject)
 

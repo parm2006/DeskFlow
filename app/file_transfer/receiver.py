@@ -54,7 +54,7 @@ class TransferReceiver:
             "disconnected", lambda metadata, payload: self.cancel_all("file lane disconnected")
         )
         lane.register_callback(
-            "chunk", lambda metadata, payload: self.accept_chunk(metadata, payload)
+            "chunk", self._accept_chunk_and_ack
         )
         lane.register_callback(
             "file_complete",
@@ -65,6 +65,17 @@ class TransferReceiver:
         lane.register_callback(
             "job_complete", lambda metadata, payload: self.complete_job(metadata["job_id"])
         )
+
+    def _accept_chunk_and_ack(self, metadata, payload):
+        if not self.accept_chunk(metadata, payload):
+            return False
+        self.lane.send({
+            "type": "chunk_received",
+            "job_id": metadata["job_id"],
+            "relative_path": metadata["relative_path"],
+            "offset": metadata["offset"],
+        })
+        return True
 
     def accept_manifest(self, wire_manifest):
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
@@ -213,7 +224,7 @@ class TransferReceiver:
 
     def record_stream_read(self, job_id, relative_path, offset, count):
         normalized = validate_relative_path(relative_path)
-        job = self._jobs[job_id]
+        job = self._stream_job(job_id)
         coverage = job["coverage"][normalized]
         coverage.add(offset, count)
         covered = self._paste_covered(job)
@@ -228,12 +239,22 @@ class TransferReceiver:
 
     def record_stream_open(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)
-        job = self._jobs[job_id]
+        job = self._stream_job(job_id)
+
         with job["condition"]:
             activity = job["stream_activity"][normalized]
             activity["active"] += 1
             activity["generation"] += 1
             job["cleanup_generation"] += 1
+
+    def _stream_job(self, job_id):
+        job = self._jobs.get(job_id)
+        if job is None:
+            reason = self._terminal_reason(job_id)
+            raise TransferAbortedError(
+                reason or "transfer is no longer available"
+            )
+        return job
 
     def record_stream_close(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)
@@ -247,6 +268,7 @@ class TransferReceiver:
             activity["active"] -= 1
             activity["generation"] += 1
             generation = activity["generation"]
+            job_generation = job["cleanup_generation"]
             incomplete = job["coverage"][normalized].covered < job["items"][normalized].size
             if activity["active"]:
                 return True
@@ -262,20 +284,32 @@ class TransferReceiver:
             return True
         timer = self.timer_factory(
             self.stream_close_grace,
-            lambda: self._confirm_stream_abandoned(job_id, normalized, generation),
+            lambda: self._confirm_stream_abandoned(
+                job_id, normalized, generation, job_generation
+            ),
         )
         if hasattr(timer, "daemon"):
             timer.daemon = True
         timer.start()
         return True
 
-    def _confirm_stream_abandoned(self, job_id, relative_path, generation):
+    def _confirm_stream_abandoned(
+        self, job_id, relative_path, generation, job_generation
+    ):
         job = self._jobs.get(job_id)
         if job is None:
             return False
         with job["condition"]:
             activity = job["stream_activity"][relative_path]
-            if activity["active"] or activity["generation"] != generation:
+            if (
+                activity["active"]
+                or activity["generation"] != generation
+                or job["cleanup_generation"] != job_generation
+                or any(
+                    other["active"]
+                    for other in job["stream_activity"].values()
+                )
+            ):
                 return False
             if job["coverage"][relative_path].covered >= job["items"][relative_path].size:
                 return False

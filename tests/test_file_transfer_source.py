@@ -3,9 +3,13 @@ import unittest
 from pathlib import Path
 
 from app.file_transfer.source import SourceChangedError, SourceFile
+from app.file_transfer.compression import MAX_CHUNK_SIZE
 
 
 class SourceFileTests(unittest.TestCase):
+    def test_default_network_burst_is_at_most_256_kib(self):
+        self.assertLessEqual(MAX_CHUNK_SIZE, 256 * 1024)
+
     def test_streams_bounded_chunks_and_preserves_snapshot_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source.bin"

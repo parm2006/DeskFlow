@@ -453,6 +453,9 @@ class DeskFlowGUI(ctk.CTk):
                 # Initial position
                 self.last_x = self.overlay_center_x
                 self.last_y = self.overlay_center_y
+                # Mapping the overlay and warping to its center can each emit a
+                # synthetic motion event. Neither represents physical input.
+                self.warp_count = 2
                 self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
         self.after(0, _show)
 
@@ -465,6 +468,12 @@ class DeskFlowGUI(ctk.CTk):
         self.after(0, _hide)
 
     def on_overlay_motion(self, event):
+        if self.warp_count > 0:
+            self.warp_count -= 1
+            self.last_x = event.x
+            self.last_y = event.y
+            return
+
         dx = event.x - self.last_x
         dy = event.y - self.last_y
         
@@ -482,6 +491,7 @@ class DeskFlowGUI(ctk.CTk):
                 
             # If we get too close to the edges of the overlay, re-center the mouse 
             if abs(event.x - self.overlay_center_x) > 100 or abs(event.y - self.overlay_center_y) > 100:
+                self.warp_count = 1
                 self.overlay.event_generate('<Motion>', warp=True, x=self.overlay_center_x, y=self.overlay_center_y)
                 
             self.last_x = event.x

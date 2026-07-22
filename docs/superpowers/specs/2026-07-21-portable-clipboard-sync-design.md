@@ -49,6 +49,7 @@ formats as an ordered snapshot:
 - registered `HTML Format`
 - registered `Rich Text Format`
 - registered `PNG`
+- registered `Chromium Web Custom MIME Data Format`
 - `CF_DIB`
 - `CF_DIBV5`
 
@@ -58,8 +59,10 @@ receiver validates the complete snapshot before opening the clipboard, then
 publishes the same entries in the same order.
 
 Unicode text is canonicalized as UTF-16LE with one terminating NUL. HTML, RTF,
-PNG, DIB, and DIBV5 remain opaque bytes; DeskFlow does not parse, sanitize,
-rewrite, fetch, or transcode their contents.
+Chromium web custom data, PNG, DIB, and DIBV5 remain opaque bytes; DeskFlow
+does not parse, sanitize, rewrite, fetch, or transcode their contents. The
+Chromium format is one fixed, bounded browser format rather than a generic
+registered-format mechanism.
 
 ## Clipboard v2 message
 
@@ -81,7 +84,8 @@ uses a versioned ordered body:
 }
 ```
 
-`kind` is one of `unicode_text`, `html`, `rtf`, `png`, `dib`, or `dibv5`.
+`kind` is one of `unicode_text`, `html`, `rtf`, `chromium_web_custom`, `png`,
+`dib`, or `dibv5`.
 Each kind may appear at most once. Unknown, duplicate, malformed, oversized,
 or trailing-data entries reject the entire message before clipboard mutation.
 DeskFlow does not partially publish a rejected snapshot.
@@ -101,6 +105,7 @@ the size:
 | Unicode text | 5 MiB |
 | HTML | 5 MiB |
 | RTF | 5 MiB |
+| Chromium web custom data | 5 MiB |
 | PNG | 32 MiB |
 | DIB | 32 MiB |
 | DIBV5 | 32 MiB |
@@ -160,9 +165,11 @@ Run each accepted case server-to-client and client-to-server.
 ### Google Docs to Google Docs (required)
 
 - plain and Unicode text
-- formatted text with headings, color, links, and lists
+- multiple paragraphs whose line breaks survive, with headings, color, links,
+  and lists
 - one selected inline image
-- formatted text plus one or more inline images in one selection
+- formatted text plus one or more inline images in one selection, including
+  the image's Docs layout mode when the source offers it
 - a small table containing text and an image
 - the same selection copied twice
 
@@ -185,7 +192,8 @@ are observations only, not pass/fail gates.
 
 ## Out of scope
 
-- arbitrary registered clipboard formats
+- arbitrary registered clipboard formats other than the one fixed, bounded
+  Chromium web custom format above
 - Office-private formats, OLE objects, and remote `IDataObject` proxying
 - `CF_HDROP`, shell ID lists, file descriptors, file contents, or drop effects
 - SVG, metafiles, and bitmap transcoding

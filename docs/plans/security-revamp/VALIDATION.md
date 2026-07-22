@@ -272,11 +272,13 @@ Use the same DeskFlow revision on both PCs.
 
 1. Copy and paste plain ASCII text.
 2. Copy and paste Unicode text containing emoji and non-Latin characters.
-3. Copy formatted text containing a heading, text color, a link, and a list.
+3. Copy multiple paragraphs containing blank lines, a heading, text color, a
+   link, and a list. Confirm every paragraph and blank line survives.
 4. Select one inline image in a Google Doc, copy it, and paste it into another
    Google Doc.
 5. In one selection, copy formatted text plus one or more inline images and
-   paste it into another Google Doc. Confirm both formatting and images survive.
+   paste it into another Google Doc. Confirm formatting, line breaks, images,
+   and each image's inline/wrap/break layout mode survive when offered by Docs.
 6. Copy and paste a small table containing text and an image.
 7. Copy the same Google Docs selection twice and paste after each copy.
 
@@ -361,18 +363,20 @@ single jobs work without reconnecting.
 
 ## 13. Clipboard restoration, duplicate names, and failure filename
 
-1. Put recognizable disposable text or an image on the destination clipboard.
-2. Paste a file whose name already exists. Choose **Don't copy** in Explorer.
-3. Paste into the original text/image application. The clipboard value from
-   step 1 must still work.
+1. Copy a disposable file and paste it where the same name already exists.
+2. Choose **Don't copy** in Explorer.
+3. Confirm the copied file remains the active clipboard item and can be offered
+   by a later explicit paste. Copying newer text or an image must still replace
+   that offer normally.
 4. Copy a disposable source file, then rename or remove it before requesting the
    paste. Trigger the safe transfer failure.
 5. Repeat with a long disposable filename.
 
-Pass when cancellation clears promptly, the virtual file no longer owns the
-clipboard, and the failure toast uses a white title containing a sanitized,
-ellipsized failed filename. The filename must not be duplicated in the detail
-text. Record any expected console probe noise separately from actual failure.
+Pass when cancellation clears promptly without erasing the user's file copy,
+newer clipboard content still wins, and the failure toast uses a white title
+containing a sanitized, ellipsized failed filename. The filename must not be
+duplicated in the detail text. Record any expected console probe noise
+separately from actual failure.
 
 ## 14. Large file, throughput, and input priority
 

@@ -4,7 +4,7 @@ from pathlib import PurePath
 
 
 MIN_COMPRESS_SIZE = 1 << 20
-MAX_CHUNK_SIZE = 1 << 20
+MAX_CHUNK_SIZE = 256 * 1024
 MIN_SAVINGS_RATIO = 0.12
 _COMPRESSED_SUFFIXES = {
     ".7z", ".avi", ".bz2", ".docx", ".gz", ".jpeg", ".jpg", ".m4a", ".mkv",
