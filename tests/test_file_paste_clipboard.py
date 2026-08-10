@@ -34,6 +34,69 @@ def text_message(text):
 
 
 class FileClipboardAvailabilityTests(unittest.TestCase):
+    def test_start_announces_the_current_offer_for_the_new_session(self):
+        offers = []
+        handler = ClipboardHandler(
+            lambda snapshot: None,
+            on_clipboard_offer=lambda kind, revision: offers.append((kind, revision)),
+        )
+
+        with (
+            patch(
+                "app.clipboard_handler.win32clipboard.GetClipboardSequenceNumber",
+                return_value=41,
+            ),
+            patch(
+                "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+                return_value=True,
+            ),
+            patch("app.clipboard_handler.threading.Thread") as thread,
+        ):
+            handler.start()
+
+        thread.return_value.start.assert_called_once()
+        self.assertEqual(handler.last_sequence_num, 41)
+        self.assertEqual(offers, [("files", 1)])
+
+    def test_consecutive_file_sequences_emit_distinct_file_offer_revisions(self):
+        offers = []
+        handler = ClipboardHandler(
+            lambda snapshot: None,
+            on_clipboard_offer=lambda kind, revision: offers.append((kind, revision)),
+        )
+
+        with patch(
+            "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+            return_value=True,
+        ):
+            handler._process_clipboard_sequence(10)
+            handler._process_clipboard_sequence(11)
+
+        self.assertEqual(offers, [("files", 1), ("files", 2)])
+
+    def test_physical_paste_refreshes_a_new_sequence_before_routing(self):
+        offers = []
+        handler = ClipboardHandler(
+            lambda snapshot: None,
+            on_clipboard_offer=lambda kind, revision: offers.append((kind, revision)),
+        )
+        handler.last_sequence_num = 10
+
+        with (
+            patch(
+                "app.clipboard_handler.win32clipboard.GetClipboardSequenceNumber",
+                return_value=11,
+            ),
+            patch(
+                "app.clipboard_handler.win32clipboard.IsClipboardFormatAvailable",
+                return_value=True,
+            ),
+        ):
+            self.assertTrue(handler.refresh_offer_if_changed())
+
+        self.assertEqual(handler.last_sequence_num, 11)
+        self.assertEqual(offers, [("files", 1)])
+
     def test_emits_boolean_only_when_file_availability_changes(self):
         changes = []
         handler = ClipboardHandler(lambda snapshot: None, on_file_availability=changes.append)

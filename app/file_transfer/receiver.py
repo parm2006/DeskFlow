@@ -1,6 +1,7 @@
 from pathlib import Path
 import logging
 import queue
+import shutil
 import threading
 import time
 from collections import OrderedDict
@@ -17,22 +18,30 @@ from .range_coverage import RangeCoverage
 
 logger = logging.getLogger(__name__)
 MAX_ACTIVE_JOBS = 8
+STAGING_OVERHEAD_PER_CHUNK = 64
 
 class TransferAbortedError(OSError):
     winerror = 1223
+
+
+class StagingCapacityError(ValueError):
+    pass
 
 
 class TransferReceiver:
     def __init__(
         self, staging_root, controller=None, clock=time.monotonic,
         timer_factory=threading.Timer, stream_close_grace=1.0,
+        disk_usage=shutil.disk_usage,
     ):
         self.staging_root = Path(staging_root)
         cleanup_staging_root(self.staging_root)
+        self.staging_root.mkdir(parents=True, exist_ok=True)
         self.controller = controller
         self.clock = clock
         self.timer_factory = timer_factory
         self.stream_close_grace = stream_close_grace
+        self.disk_usage = disk_usage
         self.lane = None
         self._jobs = {}
         self._jobs_lock = threading.RLock()
@@ -81,11 +90,33 @@ class TransferReceiver:
         manifest = validate_manifest(Manifest.from_wire(wire_manifest))
         if self._terminal_reason(manifest.job_id) is not None:
             return None
+        chunk_count = sum(
+            (item.size + MAX_CHUNK_SIZE - 1) // MAX_CHUNK_SIZE
+            for item in manifest.items
+            if item.item_type is ItemType.FILE and item.size
+        )
+        required = (
+            manifest.total_size
+            + (chunk_count * STAGING_OVERHEAD_PER_CHUNK)
+        )
         with self._jobs_lock:
             if manifest.job_id in self._jobs:
                 raise ValueError("job ID is already active")
             if len(self._jobs) >= MAX_ACTIVE_JOBS:
                 raise ValueError("active transfer limit reached")
+            reserved_remaining = sum(
+                max(
+                    0,
+                    job["staging_required"] - job["bytes_received"],
+                )
+                for job in self._jobs.values()
+            )
+            if self.disk_usage(self.staging_root).free < (
+                required + reserved_remaining
+            ):
+                raise StagingCapacityError(
+                    "insufficient encrypted staging space for transfer"
+                )
             self._jobs[manifest.job_id] = {
             "manifest": manifest,
             "items": {item.relative_path: item for item in manifest.items},
@@ -94,6 +125,7 @@ class TransferReceiver:
             "completed": {},
             "error": None,
             "bytes_received": 0,
+            "staging_required": required,
             "started": self.clock(),
             "coverage": {
                 item.relative_path: RangeCoverage(item.size)
@@ -105,7 +137,7 @@ class TransferReceiver:
             },
             "paste_started": None,
             "network_verified": False,
-            "drop_performed": False,
+            "drop_effect": None,
             "cleanup_generation": 0,
             "last_progress_bytes": -1,
             "last_progress_time": 0.0,
@@ -213,12 +245,17 @@ class TransferReceiver:
                 raise ValueError("job completed before every file was verified")
             job["network_verified"] = True
         covered = self._paste_covered(job)
-        if covered == job["manifest"].total_size:
-            self._publish_paste_progress(job_id, TransferPhase.COMPLETED, covered, force=True)
-        elif covered:
-            self._publish_paste_progress(job_id, TransferPhase.PASTING, covered, force=True)
+        phase = self._paste_phase(job, covered)
+        if phase in {
+            TransferPhase.PASTING,
+            TransferPhase.VERIFYING_RESULT,
+            TransferPhase.COMPLETED,
+        }:
+            self._publish_paste_progress(
+                job_id, phase, covered, force=True
+            )
         else:
-            self._update_paste(job_id, TransferPhase.WAITING_FOR_EXPLORER, 0, 0.0)
+            self._update_paste(job_id, phase, covered, 0.0)
         if self.lane is not None:
             self.lane.send({"type": "job_verified", "job_id": job_id})
 
@@ -230,12 +267,16 @@ class TransferReceiver:
         covered = self._paste_covered(job)
         if job["paste_started"] is None:
             job["paste_started"] = self.clock()
-        phase = (
-            TransferPhase.COMPLETED
-            if job["network_verified"] and covered == job["manifest"].total_size
-            else TransferPhase.PASTING
+        phase = self._paste_phase(job, covered)
+        self._publish_paste_progress(
+            job_id,
+            phase,
+            covered,
+            force=phase in {
+                TransferPhase.VERIFYING_RESULT,
+                TransferPhase.COMPLETED,
+            },
         )
-        self._publish_paste_progress(job_id, phase, covered, force=phase is TransferPhase.COMPLETED)
 
     def record_stream_open(self, job_id, relative_path):
         normalized = validate_relative_path(relative_path)
@@ -273,7 +314,7 @@ class TransferReceiver:
             if activity["active"]:
                 return True
             if not incomplete:
-                if job["drop_performed"] and job["network_verified"]:
+                if self._has_positive_drop(job) and job["network_verified"]:
                     cleanup_generation = self._next_cleanup_generation(job)
                 else:
                     return True
@@ -317,19 +358,23 @@ class TransferReceiver:
         if current is not None and current.is_terminal:
             return False
         logger.info("Explorer released an incomplete file stream for job %s", job_id)
-        return self.record_performed_drop(job_id)
+        return self.record_performed_drop(job_id, 0)
 
-    def record_performed_drop(self, job_id):
+    def record_performed_drop(self, job_id, effect=0):
+        if isinstance(effect, bool) or not isinstance(effect, int):
+            return False
+        if effect not in {0, 1, 2, 4}:
+            return False
         job = self._jobs.get(job_id)
         if job is None:
             return False
         with job["condition"]:
-            job["drop_performed"] = True
+            job["drop_effect"] = effect
             covered = self._paste_covered(job)
             phase = (
-                TransferPhase.COMPLETED
-                if job["network_verified"] and covered == job["manifest"].total_size
-                else TransferPhase.CANCELLED
+                TransferPhase.CANCELLED
+                if effect == 0
+                else self._paste_phase(job, covered)
             )
             if phase is TransferPhase.COMPLETED and not any(
                 activity["active"] for activity in job["stream_activity"].values()
@@ -373,7 +418,7 @@ class TransferReceiver:
             return False
         with job["condition"]:
             if (
-                not job["drop_performed"]
+                not self._has_positive_drop(job)
                 or not job["network_verified"]
                 or job["cleanup_generation"] != generation
                 or any(
@@ -405,6 +450,8 @@ class TransferReceiver:
         item = job["items"][normalized]
         if offset >= item.size:
             return b""
+        requested = min(count, item.size - offset)
+        target = offset + requested
         with job["condition"]:
             while True:
                 if job["error"] is not None:
@@ -414,12 +461,12 @@ class TransferReceiver:
                     staged = completed
                     break
                 staged = job["staged"].get(normalized)
-                if staged is not None and staged.received_size > offset:
+                if staged is not None and staged.received_size >= target:
                     break
                 job["condition"].wait()
         # Authenticated decryption and disk I/O must not hold the receiver condition;
         # incoming chunks and cancellation remain responsive during Explorer reads.
-        return staged.read_available(offset, min(count, item.size - offset))
+        return staged.read_available(offset, requested)
 
     def cancel_job(self, job_id):
         job = self._jobs.get(job_id)
@@ -514,7 +561,11 @@ class TransferReceiver:
             phase,
             _manifest_label(manifest),
             bytes_done,
-            manifest.total_size if phase is TransferPhase.PASTING or phase is TransferPhase.COMPLETED else 0,
+            manifest.total_size if phase in {
+                TransferPhase.PASTING,
+                TransferPhase.VERIFYING_RESULT,
+                TransferPhase.COMPLETED,
+            } else 0,
             speed,
         )
 
@@ -554,6 +605,23 @@ class TransferReceiver:
     @staticmethod
     def _paste_covered(job):
         return sum(coverage.covered for coverage in job["coverage"].values())
+
+    @staticmethod
+    def _has_positive_drop(job):
+        return job["drop_effect"] in {1, 2, 4}
+
+    def _paste_phase(self, job, covered):
+        if job["network_verified"] and covered == job["manifest"].total_size:
+            return (
+                TransferPhase.COMPLETED
+                if self._has_positive_drop(job)
+                else TransferPhase.VERIFYING_RESULT
+            )
+        if self._has_positive_drop(job):
+            return TransferPhase.VERIFYING_RESULT
+        if covered:
+            return TransferPhase.PASTING
+        return TransferPhase.WAITING_FOR_EXPLORER
 
     def cancel_all(self, reason):
         for job_id, job in tuple(self._jobs.items()):

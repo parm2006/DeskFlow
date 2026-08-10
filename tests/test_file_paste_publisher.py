@@ -60,7 +60,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
         restored = []
 
         def publish(file_set, on_performed_drop=None):
-            on_performed_drop()
+            on_performed_drop(1)
             return virtual_owner
 
         publisher = VirtualPastePublisher(
@@ -101,8 +101,8 @@ class VirtualPastePublisherTests(unittest.TestCase):
                 self.failures = []
                 self.terminals = set()
 
-            def record_performed_drop(self, job_id):
-                self.drops.append(job_id)
+            def record_performed_drop(self, job_id, effect):
+                self.drops.append((job_id, effect))
                 return True
 
             def fail_paste(self, job_id, error_code):
@@ -120,7 +120,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
 
         def publish(file_set, on_performed_drop=None):
             owner = object()
-            on_performed_drop()
+            on_performed_drop(1)
             return owner
 
         def inject(keyboard):
@@ -141,7 +141,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
             publisher.publish_and_paste(self.manifest("B"), receiver)
             self.assertTrue(publisher.wait_until_idle(1))
         self.assertEqual(receiver.failures, [("A", "PasteInjectionFailed")])
-        self.assertEqual(receiver.drops, ["A", "B"])
+        self.assertEqual(receiver.drops, [("A", 1), ("B", 1)])
         self.assertEqual(len(injected), 2)
         self.assertIn("RuntimeError", "\n".join(logs.output))
 
@@ -155,7 +155,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
             nonlocal publish_count
             publish_count += 1
             if publish_count == 2:
-                on_performed_drop()
+                on_performed_drop(1)
             owner = object()
             owners.append(owner)
             return owner
@@ -173,7 +173,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
 
         self.assertTrue(publisher.wait_until_idle(1))
         self.assertEqual(receiver.failures, [("A", "ExplorerStartTimeout")])
-        self.assertEqual(receiver.drops, ["B"])
+        self.assertEqual(receiver.drops, [("B", 1)])
         self.assertEqual(released, [owners[0]])
         self.assertEqual(publisher.retained_owner_count, 1)
 
@@ -185,7 +185,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
             nonlocal publish_count
             publish_count += 1
             if publish_count == 2:
-                on_performed_drop()
+                on_performed_drop(1)
             return object()
 
         def inject(keyboard):
@@ -205,7 +205,7 @@ class VirtualPastePublisherTests(unittest.TestCase):
 
         self.assertTrue(publisher.wait_until_idle(0.1))
         self.assertEqual(receiver.failures, [])
-        self.assertEqual(receiver.drops, ["B"])
+        self.assertEqual(receiver.drops, [("B", 1)])
 
     def test_paste_injection_releases_ctrl_when_key_press_fails(self):
         class Keyboard:

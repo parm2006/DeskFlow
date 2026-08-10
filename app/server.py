@@ -22,6 +22,7 @@ from app.latest_wins_sender import LatestWinsSender
 from app.safe_errors import error_name
 from app.global_hotkey import GlobalHotkeyMonitor
 from app.ports import DEFAULT_BASE_PORT
+from app.remote_clipboard import RemoteClipboardInbox
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,13 @@ class DeskFlowServer:
         self.control_network.register_callback('connected', lambda d: self._on_socket_connected('control', d))
         self.control_network.register_callback('disconnected', lambda d: self._on_socket_disconnected('control'))
         self.control_network.register_callback('switch_back', self.on_switch_back)
+        self.control_network.register_callback('clipboard_offer', self.on_remote_clipboard_offer)
         self.control_network.register_callback('file_clipboard_available', self.on_remote_file_availability)
         self.control_network.register_callback('file_manifest_request', self.on_file_manifest_request)
+        self.control_network.register_callback('file_manifest_preparing', self.on_file_manifest_preparing)
         self.control_network.register_callback('file_manifest_response', self.on_file_manifest_response)
         self.control_network.register_callback('file_manifest_failed', self.on_file_manifest_failed)
+        self.control_network.register_callback('file_manifest_rejected', self.on_file_manifest_rejected)
         self.control_network.register_callback('file_manifest_ack', self.on_file_manifest_ack)
         
         # Setup data network callbacks
@@ -96,16 +100,25 @@ class DeskFlowServer:
         # Setup clipboard
         self.clipboard = ClipboardHandler(
             on_clipboard_change=self.on_local_copy,
-            on_file_availability=self.on_local_file_availability,
+            on_clipboard_offer=self.on_local_clipboard_offer,
         )
-        self.paste_coordinator = PasteCoordinator(self._request_remote_file_paste)
+        self.paste_coordinator = PasteCoordinator(
+            self._request_remote_file_paste,
+            refresh_local_offer=self.clipboard.refresh_offer_if_changed,
+        )
+        self.remote_clipboard_inbox = RemoteClipboardInbox(
+            self.paste_coordinator, self.clipboard.inject
+        )
+        self.transfer_controller.subscribe(self._on_internal_transfer_status)
         self.hotkey_monitor = WindowsPasteHotkeyMonitor(self.paste_coordinator)
         self.local_files_available = False
         self.remote_files_available = False
         self.file_paste_service = FilePasteService(
             self.control_network, self.file_receiver, self.file_publisher,
             TransferSender(self.file_network, controller=self.transfer_controller),
-            lambda: snapshot_selection(self.clipboard.read_file_selection()),
+            snapshot_selection,
+            capture_selection=self.clipboard.read_file_selection,
+            on_request_terminal=self.paste_coordinator.clear_pending,
         )
         self.clipboard_sender = LatestWinsSender(self._send_clipboard_snapshot)
         self.switching_to_client = False
@@ -114,6 +127,10 @@ class DeskFlowServer:
 
     def cancel_transfer(self, job_id):
         return self.transfer_cancellation.request(job_id)
+
+    def _on_internal_transfer_status(self, status):
+        if status.is_terminal:
+            self.paste_coordinator.clear_pending()
 
     def _get_paste_route_lock(self):
         lock = getattr(self, "_paste_route_lock", None)
@@ -191,6 +208,8 @@ class DeskFlowServer:
 
     def on_client_connected(self):
         logger.info(f"Client connected on both ports, starting edge detection for layout: {self.layout_position}")
+        self.paste_coordinator.reset(self.control_network.session_id)
+        self.paste_coordinator.set_destination_is_local(True)
         # Send handshake layout config over control
         self.control_network.send_message({
             'type': 'layout_config',
@@ -225,6 +244,7 @@ class DeskFlowServer:
         self.input_handler.stop()
         self.clipboard.stop()
         self.file_network.close()
+        self.remote_clipboard_inbox.reset()
         self.paste_coordinator.reset()
         self.hotkey_monitor.stop()
 
@@ -243,7 +263,7 @@ class DeskFlowServer:
                 if self.switching_to_client:
                     return
                 self.switching_to_client = True
-                self.paste_coordinator.set_remote_files_available(self.local_files_available)
+                self.paste_coordinator.set_destination_is_local(False)
 
                 logger.info(f"Hit {direction} edge. Switching to client.")
                 self.control_network.send_message({
@@ -265,7 +285,11 @@ class DeskFlowServer:
         logger.info("Client signaled switch back.")
         self._release_forwarded_keys()
         self.switching_to_client = False
-        self.paste_coordinator.set_remote_files_available(self.remote_files_available)
+        set_destination = getattr(
+            self.paste_coordinator, "set_destination_is_local", None
+        )
+        if set_destination is not None:
+            set_destination(True)
         ratio = data.get('ratio', 0.5)
         self.input_handler.stop_keyboard_capture()
         if self.on_capture_stop:
@@ -447,28 +471,55 @@ class DeskFlowServer:
         self._on_emergency_exit()
 
     def on_local_copy(self, snapshot):
-        return self.clipboard_sender.submit({"snapshot": snapshot})
+        return self.clipboard_sender.submit({
+            "snapshot": snapshot,
+            "offer_revision": self.clipboard.offer_revision,
+            "session_id": getattr(self.control_network, 'session_id', None),
+        })
 
     def _send_clipboard_snapshot(self, work):
-        payload = encode_clipboard_message(work["snapshot"])
+        payload = encode_clipboard_message(
+            work["snapshot"],
+            offer_revision=work["offer_revision"],
+            session_id=work["session_id"],
+        )
         return self.data_network.send_message(payload)
 
     def on_remote_copy(self, data):
-        self.clipboard.inject(data)
+        return self.remote_clipboard_inbox.receive_payload(data)
+
+    def on_local_clipboard_offer(self, kind, revision):
+        session_id = getattr(self.control_network, 'session_id', None)
+        self.paste_coordinator.observe_local_offer(kind, revision, session_id)
+        self.remote_clipboard_inbox.on_local_offer()
+        return self.control_network.send_message({
+            'type': 'clipboard_offer',
+            'kind': kind,
+            'revision': revision,
+            'session_id': session_id,
+        })
+
+    def on_remote_clipboard_offer(self, data):
+        return self.remote_clipboard_inbox.receive_offer(
+            data.get('kind'),
+            data.get('revision'),
+            data.get('session_id'),
+        )
 
     def on_local_file_availability(self, available):
+        """Compatibility path for a legacy peer."""
         self.local_files_available = available is True
-        if getattr(self, 'switching_to_client', False):
-            self.paste_coordinator.set_remote_files_available(self.local_files_available)
         return self.control_network.send_message({
             'type': 'file_clipboard_available',
             'available': available is True,
         })
 
     def on_remote_file_availability(self, data):
+        """Compatibility path for a legacy peer."""
         self.remote_files_available = data.get('available') is True
-        if not getattr(self, 'switching_to_client', False):
-            self.paste_coordinator.set_remote_files_available(self.remote_files_available)
+        return self.paste_coordinator.set_remote_files_available(
+            self.remote_files_available
+        )
 
     def _request_remote_file_paste(self):
         with self._get_paste_route_lock():
@@ -484,11 +535,17 @@ class DeskFlowServer:
     def on_file_manifest_request(self, data):
         self.file_paste_service.on_manifest_request(data)
 
+    def on_file_manifest_preparing(self, data):
+        self.file_paste_service.on_manifest_preparing(data)
+
     def on_file_manifest_response(self, data):
         self.file_paste_service.on_manifest_response(data)
 
     def on_file_manifest_failed(self, data):
         self.file_paste_service.on_manifest_failed(data)
+
+    def on_file_manifest_rejected(self, data):
+        self.file_paste_service.on_manifest_rejected(data)
 
     def on_file_manifest_ack(self, data):
         self.file_paste_service.on_manifest_ack(data)

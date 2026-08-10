@@ -162,6 +162,7 @@ class TransferSender:
             bytes_total = metadata.get("bytes_total")
             speed = metadata.get("bytes_per_second", 0.0)
             if phase not in {
+                TransferPhase.VERIFYING_RESULT,
                 TransferPhase.PASTING,
                 TransferPhase.COMPLETED,
                 TransferPhase.CANCELLED,
@@ -292,6 +293,13 @@ class TransferSender:
 
     def _check_cancelled(self, job_id):
         if self.controller:
+            status = self.controller.status(job_id)
+            if status is not None and status.phase is TransferPhase.CANCELLED:
+                raise TransferCancelled(job_id)
+            if status is not None and status.phase is TransferPhase.FAILED:
+                raise DestinationPasteError(
+                    _safe_destination_error_code(status.error_code)
+                )
             self.controller.check_cancelled(job_id)
 
 def _manifest_label(manifest):

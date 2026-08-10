@@ -13,6 +13,40 @@ class FakeClock:
 
 
 class ManifestHandshakeTests(unittest.TestCase):
+    def test_timeout_reports_terminal_request(self):
+        clock = FakeClock()
+        terminal = []
+        queue = ManifestHandshakeQueue(
+            lambda message: None,
+            clock=clock,
+            on_terminal=terminal.append,
+        )
+        request = queue.begin()
+        clock.value += 1.01
+
+        queue.expire()
+
+        self.assertEqual(terminal, [request])
+
+    def test_preparing_ack_extends_request_beyond_initial_deadline(self):
+        clock = FakeClock()
+        queue = ManifestHandshakeQueue(
+            lambda message: None,
+            clock=clock,
+            timeout_seconds=1.0,
+            preparation_timeout_seconds=120.0,
+        )
+        request = queue.begin()
+        clock.value += 0.5
+
+        self.assertTrue(queue.mark_preparing(request.request_id))
+        clock.value += 30.0
+
+        self.assertTrue(queue.accept(
+            request.request_id, {"job_id": "prepared"}
+        ))
+        self.assertEqual(request.state, RequestState.ACCEPTED)
+
     def test_pending_request_count_is_bounded_and_expiry_releases_capacity(self):
         clock = FakeClock()
         queue = ManifestHandshakeQueue(lambda message: None, clock=clock)

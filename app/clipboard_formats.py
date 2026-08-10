@@ -76,13 +76,34 @@ def _encoded_message_size(message):
         raise ClipboardPayloadError("clipboard message is not valid JSON") from error
 
 
-def encode_clipboard_message(snapshot):
+def _validate_offer_identity(revision, session_id):
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision <= 0
+    ):
+        raise ClipboardPayloadError("clipboard offer revision is invalid")
+    if (
+        not isinstance(session_id, str)
+        or not session_id
+        or len(session_id) > 128
+    ):
+        raise ClipboardPayloadError("clipboard offer session is invalid")
+    return revision, session_id
+
+
+def encode_clipboard_message(
+    snapshot, offer_revision=None, session_id=None
+):
     if not isinstance(snapshot, ClipboardSnapshot):
         raise ClipboardPayloadError("clipboard value must be a snapshot")
     snapshot = ClipboardSnapshot(snapshot.entries)
+    revisioned = offer_revision is not None or session_id is not None
+    if revisioned:
+        _validate_offer_identity(offer_revision, session_id)
     message = {
         "type": "clipboard_sync",
-        "version": 2,
+        "version": 3 if revisioned else 2,
         "formats": [
             {
                 "kind": entry.kind,
@@ -94,9 +115,25 @@ def encode_clipboard_message(snapshot):
             for entry in snapshot.entries
         ],
     }
+    if revisioned:
+        message["offer_revision"] = offer_revision
+        message["session_id"] = session_id
     if _encoded_message_size(message) > MAX_ENCODED_MESSAGE_BYTES:
         raise ClipboardPayloadError("clipboard message exceeds its encoded size limit")
     return message
+
+
+def clipboard_message_identity(message):
+    if not isinstance(message, dict):
+        raise ClipboardPayloadError("clipboard message must be an object")
+    version = message.get("version")
+    if version == 2:
+        return None, None
+    if version != 3:
+        raise ClipboardPayloadError("clipboard message version is unsupported")
+    return _validate_offer_identity(
+        message.get("offer_revision"), message.get("session_id")
+    )
 
 
 def _decode_entry_data(kind, value, limit):
@@ -125,13 +162,17 @@ def decode_clipboard_message(message):
         raise ClipboardPayloadError("clipboard message must be an object")
     if _encoded_message_size(message) > MAX_ENCODED_MESSAGE_BYTES:
         raise ClipboardPayloadError("clipboard message exceeds its encoded size limit")
-    if set(message) != {"type", "version", "formats"}:
-        raise ClipboardPayloadError("clipboard message fields are invalid")
-    if message["type"] != "clipboard_sync":
+    if message.get("type") != "clipboard_sync":
         raise ClipboardPayloadError("clipboard message type is invalid")
-    version = message["version"]
-    if isinstance(version, bool) or not isinstance(version, int) or version != 2:
+    version = message.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version not in (2, 3):
         raise ClipboardPayloadError("clipboard message version is unsupported")
+    expected_fields = {"type", "version", "formats"}
+    if version == 3:
+        expected_fields.update(("offer_revision", "session_id"))
+        clipboard_message_identity(message)
+    if set(message) != expected_fields:
+        raise ClipboardPayloadError("clipboard message fields are invalid")
     formats = message["formats"]
     if not isinstance(formats, list):
         raise ClipboardPayloadError("clipboard formats must be a list")

@@ -60,6 +60,128 @@ class Manifest:
 
 
 class FilePasteServiceTests(unittest.TestCase):
+    def test_source_selection_is_captured_before_background_manifest_work(self):
+        selected = [["first.txt"]]
+        scheduled = []
+        observed = []
+        service = FilePasteService(
+            control=RecordingControl(),
+            receiver=RecordingReceiver(),
+            publisher=RecordingPublisher(),
+            sender=RecordingSender(),
+            capture_selection=lambda: tuple(selected[0]),
+            snapshot_selection=lambda paths: (
+                observed.append(paths) or
+                (Manifest(JOB_A), {"first.txt": object()})
+            ),
+            prepare_submit=scheduled.append,
+        )
+
+        service.on_manifest_request({"request_id": VALID_REQUEST})
+        selected[0] = ["second.txt"]
+        scheduled.pop()()
+
+        self.assertEqual(observed, [("first.txt",)])
+
+    def test_manifest_rejection_releases_pending_route_without_ack_or_paste(self):
+        released = []
+
+        class RejectingReceiver(RecordingReceiver):
+            def accept_manifest(self, manifest):
+                raise ValueError("insufficient encrypted staging space")
+
+        control = RecordingControl()
+        publisher = RecordingPublisher()
+        service = FilePasteService(
+            control=control,
+            receiver=RejectingReceiver(),
+            publisher=publisher,
+            sender=RecordingSender(),
+            snapshot_selection=lambda: None,
+            on_request_terminal=lambda: released.append("released"),
+        )
+        pending = service.request_paste()
+
+        self.assertFalse(service.on_manifest_response({
+            "request_id": pending.request_id,
+            "manifest": {"job_id": JOB_A},
+        }))
+
+        self.assertEqual(released, ["released"])
+        self.assertFalse(any(
+            message["type"] == "file_manifest_ack"
+            for message in control.messages
+        ))
+        self.assertEqual(publisher.jobs, [])
+        self.assertEqual(control.messages[-1], {
+            "type": "file_manifest_rejected",
+            "job_id": JOB_A,
+            "error": "ValueError",
+        })
+
+    def test_source_releases_snapshot_immediately_when_manifest_is_rejected(self):
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
+        service, _, _, _, _ = self.make_service(snapshots)
+        service.on_manifest_request({"request_id": VALID_REQUEST})
+        self.assertIn(JOB_A, service._outgoing)
+
+        self.assertTrue(service.on_manifest_rejected({
+            "job_id": JOB_A,
+            "error": "StagingCapacityError",
+        }))
+
+        self.assertNotIn(JOB_A, service._outgoing)
+        self.assertNotIn(JOB_A, service._outgoing_timers)
+
+    def test_manifest_request_acknowledges_preparing_before_snapshot_work(self):
+        scheduled = []
+        snapshots = [(Manifest(JOB_A), {"a.txt": object()})]
+        control = RecordingControl()
+        service = FilePasteService(
+            control=control,
+            receiver=RecordingReceiver(),
+            publisher=RecordingPublisher(),
+            sender=RecordingSender(),
+            snapshot_selection=lambda: snapshots.pop(0),
+            prepare_submit=scheduled.append,
+        )
+
+        self.assertTrue(service.on_manifest_request({
+            "request_id": VALID_REQUEST
+        }))
+
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(control.messages, [{
+            "type": "file_manifest_preparing",
+            "request_id": VALID_REQUEST,
+        }])
+
+        scheduled.pop()()
+
+        self.assertEqual(snapshots, [])
+        self.assertEqual(control.messages[-1]["type"], "file_manifest_response")
+
+    def test_manifest_failure_releases_the_pending_route(self):
+        released = []
+        control = RecordingControl()
+        service = FilePasteService(
+            control=control,
+            receiver=RecordingReceiver(),
+            publisher=RecordingPublisher(),
+            sender=RecordingSender(),
+            snapshot_selection=lambda: None,
+            on_request_terminal=lambda: released.append("released"),
+        )
+        pending = service.request_paste()
+
+        self.assertTrue(service.on_manifest_failed({
+            "request_id": pending.request_id,
+            "error": "SelectionUnavailable",
+        }))
+
+        self.assertEqual(released, ["released"])
+
     def test_destination_acknowledges_before_async_paste_can_report_failure(self):
         events = []
 
@@ -84,6 +206,7 @@ class FilePasteServiceTests(unittest.TestCase):
             sender=sender,
             snapshot_selection=lambda: None,
             executor=ImmediateExecutor(sender),
+            prepare_submit=lambda work: work(),
         )
         pending = service.request_paste()
 
@@ -125,6 +248,7 @@ class FilePasteServiceTests(unittest.TestCase):
             sender=sender,
             snapshot_selection=lambda: snapshots.pop(0),
             executor=ImmediateExecutor(sender),
+            prepare_submit=lambda work: work(),
         )
         return service, control, receiver, publisher, sender
 
@@ -136,8 +260,11 @@ class FilePasteServiceTests(unittest.TestCase):
         service.on_manifest_request({"request_id": VALID_REQUEST})
 
         self.assertEqual(snapshots, [])
-        self.assertEqual(control.messages[0]["type"], "file_manifest_response")
-        self.assertEqual(control.messages[0]["request_id"], VALID_REQUEST)
+        self.assertEqual(
+            [message["type"] for message in control.messages],
+            ["file_manifest_preparing", "file_manifest_response"],
+        )
+        self.assertEqual(control.messages[1]["request_id"], VALID_REQUEST)
 
     def test_invalid_request_id_is_rejected_before_snapshotting(self):
         snapshots = [(Manifest(JOB_A), {"a.txt": object()})]

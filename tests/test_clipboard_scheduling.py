@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.clipboard_handler import ClipboardHandler
@@ -163,6 +164,10 @@ class PeerClipboardSchedulingTests(unittest.TestCase):
     def test_client_submits_snapshot_without_mutating_it(self):
         client = DeskFlowClient.__new__(DeskFlowClient)
         client.clipboard_sender = RecordingSender()
+        client.clipboard = SimpleNamespace(offer_revision=4)
+        client.control_network = SimpleNamespace(
+            session_info={"session_id": "session-a"}
+        )
         snapshot = ClipboardSnapshot([ClipboardEntry("html", b"hello")])
 
         self.assertTrue(client.on_local_copy(snapshot))
@@ -170,12 +175,18 @@ class PeerClipboardSchedulingTests(unittest.TestCase):
         self.assertEqual(snapshot.entries[0].data, b"hello")
         self.assertEqual(
             client.clipboard_sender.submitted,
-            [{"snapshot": snapshot}],
+            [{
+                "snapshot": snapshot,
+                "offer_revision": 4,
+                "session_id": "session-a",
+            }],
         )
 
     def test_server_submits_snapshot_without_mutating_it(self):
         server = DeskFlowServer.__new__(DeskFlowServer)
         server.clipboard_sender = RecordingSender()
+        server.clipboard = SimpleNamespace(offer_revision=5)
+        server.control_network = SimpleNamespace(session_id="session-a")
         snapshot = ClipboardSnapshot([ClipboardEntry("png", b"png")])
 
         self.assertTrue(server.on_local_copy(snapshot))
@@ -183,7 +194,11 @@ class PeerClipboardSchedulingTests(unittest.TestCase):
         self.assertEqual(snapshot.entries[0].data, b"png")
         self.assertEqual(
             server.clipboard_sender.submitted,
-            [{"snapshot": snapshot}],
+            [{
+                "snapshot": snapshot,
+                "offer_revision": 5,
+                "session_id": "session-a",
+            }],
         )
 
     def test_client_encodes_snapshot_and_preserves_message_type(self):
@@ -191,7 +206,11 @@ class PeerClipboardSchedulingTests(unittest.TestCase):
         client.data_network = RecordingNetwork()
         snapshot = ClipboardSnapshot([ClipboardEntry("dib", b"dib")])
 
-        self.assertTrue(client._send_clipboard_snapshot({"snapshot": snapshot}))
+        self.assertTrue(client._send_clipboard_snapshot({
+            "snapshot": snapshot,
+            "offer_revision": 1,
+            "session_id": "session-a",
+        }))
 
         message = client.data_network.messages[0]
         self.assertEqual(decode_clipboard_message(message), snapshot)
@@ -206,7 +225,11 @@ class PeerClipboardSchedulingTests(unittest.TestCase):
             ]
         )
 
-        self.assertTrue(server._send_clipboard_snapshot({"snapshot": snapshot}))
+        self.assertTrue(server._send_clipboard_snapshot({
+            "snapshot": snapshot,
+            "offer_revision": 2,
+            "session_id": "session-a",
+        }))
 
         message = server.data_network.messages[0]
         self.assertEqual(decode_clipboard_message(message), snapshot)

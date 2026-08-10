@@ -44,6 +44,30 @@ class LoopbackLane:
 
 
 class TransferSenderTests(unittest.TestCase):
+    def test_destination_cancelled_progress_stops_the_active_sender(self):
+        class Lane:
+            def register_callback(self, _name, _callback):
+                return None
+
+        controller = TransferController()
+        controller.update(
+            JOB_ID, TransferPhase.TRANSFERRING, "file.bin", 1, 10
+        )
+        sender = TransferSender(Lane(), controller=controller)
+        sender._paste_jobs[JOB_ID] = ("file.bin", 10)
+
+        self.assertTrue(sender._on_paste_progress({
+            "type": "paste_progress",
+            "job_id": JOB_ID,
+            "phase": TransferPhase.CANCELLED.value,
+            "bytes_done": 1,
+            "bytes_total": 10,
+            "bytes_per_second": 0.0,
+        }, b""))
+
+        with self.assertRaises(TransferCancelled):
+            sender._check_cancelled(JOB_ID)
+
     def test_sliding_window_bounds_bytes_without_stop_and_wait(self):
         class AcknowledgingLane:
             supports_chunk_ack = True
@@ -346,6 +370,34 @@ class TransferSenderTests(unittest.TestCase):
             "bytes_total": 101, "bytes_per_second": 10,
         }, b""))
         self.assertEqual(controller.status(JOB_ID).bytes_done, 50)
+
+    def test_verifying_result_progress_advances_source_status(self):
+        controller = TransferController()
+        lane = type(
+            "Lane", (),
+            {
+                "callbacks": {},
+                "register_callback": lambda self, kind, cb: self.callbacks.setdefault(kind, []).append(cb),
+            },
+        )()
+        sender = TransferSender(lane, controller=controller)
+        sender._paste_jobs[JOB_ID] = ("file.bin", 100)
+        controller.update(JOB_ID, TransferPhase.WAITING_FOR_EXPLORER, "file.bin", 0, 0)
+
+        handled = sender._on_paste_progress({
+            "job_id": JOB_ID,
+            "phase": "verifying_result",
+            "bytes_done": 100,
+            "bytes_total": 100,
+            "bytes_per_second": 5,
+        }, b"")
+
+        self.assertTrue(handled)
+        self.assertEqual(
+            controller.status(JOB_ID).phase,
+            TransferPhase.VERIFYING_RESULT,
+        )
+        self.assertEqual(controller.status(JOB_ID).bytes_done, 100)
 
     def test_remote_cancelled_paste_closes_source_status(self):
         controller = TransferController()

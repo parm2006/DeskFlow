@@ -11,12 +11,41 @@ from app.clipboard_formats import (
     ClipboardEntry,
     ClipboardPayloadError,
     ClipboardSnapshot,
+    clipboard_message_identity,
     decode_clipboard_message,
     encode_clipboard_message,
 )
 
 
 class ClipboardSnapshotTests(unittest.TestCase):
+    def test_revisioned_message_preserves_offer_identity(self):
+        snapshot = ClipboardSnapshot([ClipboardEntry("unicode_text", b"text")])
+
+        message = encode_clipboard_message(
+            snapshot,
+            offer_revision=7,
+            session_id="session-a",
+        )
+
+        self.assertEqual(message["version"], 3)
+        self.assertEqual(
+            clipboard_message_identity(message),
+            (7, "session-a"),
+        )
+        self.assertEqual(decode_clipboard_message(message), snapshot)
+
+    def test_revisioned_message_requires_complete_valid_identity(self):
+        snapshot = ClipboardSnapshot([ClipboardEntry("unicode_text", b"text")])
+
+        with self.assertRaises(ClipboardPayloadError):
+            encode_clipboard_message(snapshot, offer_revision=1)
+        with self.assertRaises(ClipboardPayloadError):
+            encode_clipboard_message(
+                snapshot,
+                offer_revision=True,
+                session_id="session-a",
+            )
+
     def test_snapshot_preserves_non_default_format_order(self):
         entries = [
             ClipboardEntry("html", b"html"),

@@ -26,6 +26,15 @@ from app.windows_virtual_files import (
 
 
 class FileGroupDescriptorTests(unittest.TestCase):
+    def test_descriptor_preserves_file_sizes_above_four_gibibytes(self):
+        size = (5 * 1024 * 1024 * 1024) + 123
+
+        packed = build_file_group_descriptor([
+            VirtualFile("huge.bin", size, lambda: b"")
+        ])
+
+        self.assertEqual(parse_file_group_descriptor(packed)[0].size, size)
+
     def test_builds_unicode_descriptors_with_size_and_attributes(self):
         files = [
             VirtualFile("notes.txt", 5, lambda: b"hello"),
@@ -87,7 +96,7 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         observed = []
         data_object = VirtualFileDataObject(
             VirtualFileSet([VirtualFile("a.txt", 1, lambda: b"a")]),
-            on_performed_drop=lambda: observed.append("done"),
+            on_performed_drop=observed.append,
         )
         performed_drop = win32clipboard.RegisterClipboardFormat("Performed DropEffect")
         medium = pythoncom.STGMEDIUM()
@@ -99,7 +108,7 @@ class VirtualFileDataObjectTests(unittest.TestCase):
             False,
         )
 
-        self.assertEqual(observed, ["done"])
+        self.assertEqual(observed, [0])
 
     def setUp(self):
         pythoncom.OleInitialize()
@@ -221,6 +230,27 @@ class VirtualFileDataObjectTests(unittest.TestCase):
         stream.Seek(2, 0)
         self.assertEqual(stream.Read(3), b"cde")
         self.assertEqual(consumed, [(0, 4), (2, 3)])
+
+    def test_callback_stream_copy_to_uses_bounded_chunks(self):
+        requested = []
+        written = []
+        size = (3 * 1024 * 1024) + 17
+
+        def read_range(offset, count):
+            requested.append(count)
+            return b"x" * count
+
+        class Destination:
+            def Write(self, data):
+                written.append(len(data))
+
+        stream = CallbackStream(read_range, size)
+
+        copied = stream.CopyTo(Destination(), size)
+
+        self.assertEqual(copied, (size, size))
+        self.assertEqual(sum(written), size)
+        self.assertLessEqual(max(requested), 1024 * 1024)
 
     def test_callback_stream_maps_intentional_cancel_to_windows_cancel_hresult(self):
         class CancelledRead(OSError):

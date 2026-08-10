@@ -7,6 +7,7 @@ from enum import Enum
 
 class RequestState(str, Enum):
     PENDING = "pending"
+    PREPARING = "preparing"
     ACCEPTED = "accepted"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
@@ -24,14 +25,19 @@ class ManifestRequest:
 class ManifestHandshakeQueue:
     def __init__(
         self, send_request, clock=time.monotonic, timeout_seconds=1.0,
-        max_pending=8, history_limit=64, timer_factory=threading.Timer,
+        preparation_timeout_seconds=120.0, max_pending=8, history_limit=64,
+        timer_factory=threading.Timer, on_terminal=None,
     ):
         self.send_request = send_request
         self.clock = clock
         self.timeout_seconds = float(timeout_seconds)
+        self.preparation_timeout_seconds = float(
+            preparation_timeout_seconds
+        )
         self.max_pending = int(max_pending)
         self.history_limit = int(history_limit)
         self.timer_factory = timer_factory
+        self.on_terminal = on_terminal
         self._requests = []
         self._by_id = {}
         self._timers = {}
@@ -68,7 +74,9 @@ class ManifestHandshakeQueue:
     def accept(self, request_id, manifest):
         with self._lock:
             request = self._by_id.get(request_id)
-            if request is None or request.state is not RequestState.PENDING:
+            if request is None or request.state not in {
+                RequestState.PENDING, RequestState.PREPARING,
+            }:
                 return False
             if self.clock() > request.deadline:
                 self._finish_locked(request, RequestState.TIMED_OUT)
@@ -76,10 +84,29 @@ class ManifestHandshakeQueue:
             self._finish_locked(request, RequestState.ACCEPTED)
             return True
 
-    def fail(self, request_id, error):
+    def mark_preparing(self, request_id):
         with self._lock:
             request = self._by_id.get(request_id)
             if request is None or request.state is not RequestState.PENDING:
+                return False
+            request.state = RequestState.PREPARING
+            request.deadline = (
+                self.clock() + self.preparation_timeout_seconds
+            )
+            timer = self._timers.pop(request.request_id, None)
+            if timer is not None:
+                timer.cancel()
+            self._schedule_expiry_locked(
+                request, self.preparation_timeout_seconds
+            )
+            return True
+
+    def fail(self, request_id, error):
+        with self._lock:
+            request = self._by_id.get(request_id)
+            if request is None or request.state not in {
+                RequestState.PENDING, RequestState.PREPARING,
+            }:
                 return False
             request.error = error
             self._finish_locked(request, RequestState.FAILED)
@@ -126,11 +153,17 @@ class ManifestHandshakeQueue:
         if timer is not None:
             timer.cancel()
         self._trim_history_locked()
+        if self.on_terminal is not None:
+            self.on_terminal(request)
 
     def _trim_history_locked(self):
         while len(self._requests) > self.history_limit:
             for index, request in enumerate(self._requests):
-                if request.state is not RequestState.PENDING:
+                if request.state in {
+                    RequestState.ACCEPTED,
+                    RequestState.FAILED,
+                    RequestState.TIMED_OUT,
+                }:
                     self._requests.pop(index)
                     break
             else:

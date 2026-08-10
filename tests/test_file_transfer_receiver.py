@@ -1,5 +1,6 @@
 import hashlib
 import tempfile
+from collections import namedtuple
 import unittest
 import threading
 import time
@@ -14,6 +15,116 @@ from app.file_transfer.status import TransferPhase
 
 
 class TransferReceiverTests(unittest.TestCase):
+    def test_manifest_is_rejected_before_job_creation_when_staging_is_full(self):
+        item = FileItem(
+            "large.bin", ItemType.FILE, 1024, 1,
+            hashlib.sha256(b"x" * 1024).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        DiskUsage = namedtuple("DiskUsage", "total used free")
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(
+                Path(directory),
+                disk_usage=lambda _path: DiskUsage(1000, 999, 1),
+            )
+
+            with self.assertRaisesRegex(ValueError, "staging space"):
+                receiver.accept_manifest(manifest.to_wire())
+
+            self.assertNotIn(manifest.job_id, receiver._jobs)
+
+    def test_concurrent_manifests_cannot_overcommit_staging_space(self):
+        DiskUsage = namedtuple("DiskUsage", "total used free")
+        first = Manifest.create([FileItem(
+            "first.bin", ItemType.FILE, 1024, 1,
+            hashlib.sha256(b"a" * 1024).hexdigest(),
+        )])
+        second = Manifest.create([FileItem(
+            "second.bin", ItemType.FILE, 1024, 1,
+            hashlib.sha256(b"b" * 1024).hexdigest(),
+        )])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(
+                Path(directory),
+                disk_usage=lambda _path: DiskUsage(2000, 500, 1500),
+            )
+
+            receiver.accept_manifest(first.to_wire())
+            with self.assertRaisesRegex(ValueError, "staging space"):
+                receiver.accept_manifest(second.to_wire())
+
+            self.assertIn(first.job_id, receiver._jobs)
+            self.assertNotIn(second.job_id, receiver._jobs)
+            receiver.cancel_job(first.job_id)
+
+    def test_positive_shell_outcome_waits_for_verified_full_coverage(self):
+        content = b"data"
+        item = FileItem(
+            "copy.bin", ItemType.FILE, len(content), 1,
+            hashlib.sha256(content).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+
+            receiver.record_performed_drop(manifest.job_id, 1)
+
+            self.assertEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.VERIFYING_RESULT,
+            )
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": 0,
+                "compressed": False,
+                "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            receiver.record_stream_read(
+                manifest.job_id, item.relative_path, 0, len(content)
+            )
+            receiver.complete_job(manifest.job_id)
+
+            self.assertEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.COMPLETED,
+            )
+
+    def test_shell_none_cancels_even_after_full_byte_coverage(self):
+        content = b"data"
+        item = FileItem(
+            "copy.bin", ItemType.FILE, len(content), 1,
+            hashlib.sha256(content).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        controller = TransferController()
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory), controller=controller)
+            receiver.accept_manifest(manifest.to_wire())
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": 0,
+                "compressed": False,
+                "original_size": len(content),
+            }, content)
+            receiver.complete_file(manifest.job_id, item.relative_path)
+            receiver.record_stream_open(manifest.job_id, item.relative_path)
+            receiver.record_stream_read(
+                manifest.job_id, item.relative_path, 0, len(content)
+            )
+
+            receiver.record_performed_drop(manifest.job_id, 0)
+
+            self.assertEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.CANCELLED,
+            )
+
     def test_attached_receiver_acknowledges_a_persisted_chunk(self):
         class Lane:
             def __init__(self):
@@ -341,7 +452,7 @@ class TransferReceiverTests(unittest.TestCase):
         self.assertNotIn(TransferPhase.VERIFYING, [status.phase for status in observed])
         self.assertEqual(observed[-1].phase, TransferPhase.WAITING_FOR_EXPLORER)
 
-    def test_explorer_reads_drive_paste_progress_and_fallback_completion(self):
+    def test_explorer_reads_wait_for_positive_shell_completion(self):
         content = b"explorer consumed bytes"
         item = FileItem("copy.bin", ItemType.FILE, len(content), 1, hashlib.sha256(content).hexdigest())
         manifest = Manifest.create([item])
@@ -359,6 +470,11 @@ class TransferReceiverTests(unittest.TestCase):
             self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.PASTING)
             self.assertEqual(controller.status(manifest.job_id).bytes_done, 8)
             receiver.record_stream_read(manifest.job_id, item.relative_path, 8, len(content) - 8)
+            self.assertEqual(
+                controller.status(manifest.job_id).phase,
+                TransferPhase.VERIFYING_RESULT,
+            )
+            receiver.record_performed_drop(manifest.job_id, 1)
 
         self.assertEqual(controller.status(manifest.job_id).phase, TransferPhase.COMPLETED)
         self.assertEqual(controller.status(manifest.job_id).bytes_done, len(content))
@@ -399,7 +515,7 @@ class TransferReceiverTests(unittest.TestCase):
             receiver.record_stream_read(
                 manifest.job_id, item.relative_path, 0, len(content)
             )
-            receiver.record_performed_drop(manifest.job_id)
+            receiver.record_performed_drop(manifest.job_id, 1)
 
             self.assertTrue(list((root / "completed").rglob("*.cache")))
             self.assertFalse(callbacks)
@@ -492,6 +608,46 @@ class TransferReceiverTests(unittest.TestCase):
             reader.join(1)
 
             self.assertEqual(result, [b"stre"])
+            receiver.cancel_job(manifest.job_id)
+
+    def test_reader_does_not_return_short_before_requested_range_arrives(self):
+        content = (b"x" * MAX_CHUNK_SIZE) + b"end"
+        item = FileItem(
+            "stream.bin", ItemType.FILE, len(content), 1,
+            hashlib.sha256(content).hexdigest(),
+        )
+        manifest = Manifest.create([item])
+        with tempfile.TemporaryDirectory() as directory:
+            receiver = TransferReceiver(Path(directory))
+            receiver.accept_manifest(manifest.to_wire())
+            result = []
+            reader = threading.Thread(target=lambda: result.append(
+                receiver.read_range(
+                    manifest.job_id, item.relative_path, 0, len(content)
+                )
+            ))
+            reader.start()
+
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": 0,
+                "compressed": False,
+                "original_size": MAX_CHUNK_SIZE,
+            }, content[:MAX_CHUNK_SIZE])
+            time.sleep(0.02)
+            self.assertTrue(reader.is_alive())
+
+            receiver.accept_chunk({
+                "job_id": manifest.job_id,
+                "relative_path": item.relative_path,
+                "offset": MAX_CHUNK_SIZE,
+                "compressed": False,
+                "original_size": len(content) - MAX_CHUNK_SIZE,
+            }, content[MAX_CHUNK_SIZE:])
+            reader.join(1)
+
+            self.assertEqual(result, [content])
             receiver.cancel_job(manifest.job_id)
 
     def test_cancel_wakes_blocked_reader_with_error(self):

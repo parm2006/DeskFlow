@@ -1,13 +1,18 @@
 import threading
 import unittest
+from types import SimpleNamespace
 
 from app.client import DeskFlowClient
+from app.clipboard_formats import ClipboardEntry, ClipboardSnapshot
+from app.file_transfer.paste_coordinator import PasteCoordinator
 from app.server import DeskFlowServer
 
 
 class RecordingNetwork:
     def __init__(self):
         self.messages = []
+        self.session_id = "session-a"
+        self.session_info = {"session_id": "session-a"}
 
     def send_message(self, message):
         self.messages.append(message)
@@ -17,9 +22,42 @@ class RecordingNetwork:
 class RecordingCoordinator:
     def __init__(self):
         self.values = []
+        self.local_offers = []
+        self.peer_offers = []
+        self.destinations = []
 
     def set_remote_files_available(self, value):
         self.values.append(value)
+
+    def observe_local_offer(self, kind, revision, session_id):
+        self.local_offers.append((kind, revision, session_id))
+        return True
+
+    def observe_peer_offer(self, kind, revision, session_id):
+        self.peer_offers.append((kind, revision, session_id))
+        return True
+
+    def set_destination_is_local(self, value):
+        self.destinations.append(value)
+
+
+class RecordingInbox:
+    def __init__(self):
+        self.offers = []
+        self.payloads = []
+        self.local_offer_count = 0
+
+    def receive_offer(self, kind, revision, session_id):
+        self.offers.append((kind, revision, session_id))
+        return True
+
+    def receive_payload(self, payload):
+        self.payloads.append(payload)
+        return True
+
+    def on_local_offer(self):
+        self.local_offer_count += 1
+        return True
 
 
 class RecordingInputHandler:
@@ -59,27 +97,131 @@ class BlockingPasteService(PasteServiceState):
 
 
 class FileAvailabilityRoutingTests(unittest.TestCase):
-    def test_client_sends_local_boolean_and_applies_remote_boolean(self):
+    def test_ordinary_clipboard_payload_carries_the_offer_identity(self):
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.control_network = RecordingNetwork()
+        client.data_network = RecordingNetwork()
+        snapshot = ClipboardSnapshot([
+            ClipboardEntry("unicode_text", b"text")
+        ])
+
+        client._send_clipboard_snapshot({
+            "snapshot": snapshot,
+            "offer_revision": 7,
+            "session_id": "session-a",
+        })
+
+        self.assertEqual(len(client.data_network.messages), 1)
+        self.assertEqual(client.data_network.messages[0]["version"], 3)
+        self.assertEqual(client.data_network.messages[0]["offer_revision"], 7)
+        self.assertEqual(
+            client.data_network.messages[0]["session_id"], "session-a"
+        )
+
+    def test_local_copy_latches_revision_before_async_send(self):
+        submitted = []
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.control_network = RecordingNetwork()
+        client.clipboard = SimpleNamespace(offer_revision=11)
+        client.clipboard_sender = SimpleNamespace(
+            submit=lambda work: submitted.append(work) or True
+        )
+        snapshot = object()
+
+        client.on_local_copy(snapshot)
+
+        self.assertEqual(submitted, [{
+            "snapshot": snapshot,
+            "offer_revision": 11,
+            "session_id": "session-a",
+        }])
+
+    def test_client_sends_and_observes_revisioned_clipboard_offers(self):
         client = DeskFlowClient.__new__(DeskFlowClient)
         client.control_network = RecordingNetwork()
         client.paste_coordinator = RecordingCoordinator()
+        client.remote_clipboard_inbox = RecordingInbox()
 
-        client.on_local_file_availability(True)
-        client.on_remote_file_availability({"available": False})
+        client.on_local_clipboard_offer("files", 7)
+        client.on_remote_clipboard_offer({
+            "kind": "ordinary",
+            "revision": 9,
+            "session_id": "session-a",
+        })
 
-        self.assertEqual(client.control_network.messages, [{"type": "file_clipboard_available", "available": True}])
-        self.assertEqual(client.paste_coordinator.values, [False])
+        self.assertEqual(client.control_network.messages, [{
+            "type": "clipboard_offer",
+            "kind": "files",
+            "revision": 7,
+            "session_id": "session-a",
+        }])
+        self.assertEqual(
+            client.paste_coordinator.local_offers,
+            [("files", 7, "session-a")],
+        )
+        self.assertEqual(
+            client.remote_clipboard_inbox.offers,
+            [("ordinary", 9, "session-a")],
+        )
+        self.assertEqual(client.remote_clipboard_inbox.local_offer_count, 1)
 
-    def test_server_sends_local_boolean_and_applies_remote_boolean(self):
+    def test_server_sends_and_observes_revisioned_clipboard_offers(self):
         server = DeskFlowServer.__new__(DeskFlowServer)
         server.control_network = RecordingNetwork()
         server.paste_coordinator = RecordingCoordinator()
+        server.remote_clipboard_inbox = RecordingInbox()
 
-        server.on_local_file_availability(False)
-        server.on_remote_file_availability({"available": True})
+        server.on_local_clipboard_offer("ordinary", 3)
+        server.on_remote_clipboard_offer({
+            "kind": "files",
+            "revision": 4,
+            "session_id": "session-a",
+        })
 
-        self.assertEqual(server.control_network.messages, [{"type": "file_clipboard_available", "available": False}])
-        self.assertEqual(server.paste_coordinator.values, [True])
+        self.assertEqual(server.control_network.messages, [{
+            "type": "clipboard_offer",
+            "kind": "ordinary",
+            "revision": 3,
+            "session_id": "session-a",
+        }])
+        self.assertEqual(
+            server.paste_coordinator.local_offers,
+            [("ordinary", 3, "session-a")],
+        )
+        self.assertEqual(
+            server.remote_clipboard_inbox.offers,
+            [("files", 4, "session-a")],
+        )
+        self.assertEqual(server.remote_clipboard_inbox.local_offer_count, 1)
+
+    def test_remote_clipboard_data_routes_through_revision_inbox(self):
+        payload = {"type": "clipboard_sync"}
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.remote_clipboard_inbox = RecordingInbox()
+
+        self.assertTrue(client.on_remote_copy(payload))
+
+        self.assertEqual(client.remote_clipboard_inbox.payloads, [payload])
+
+    def test_terminal_transfer_releases_the_pending_paste_route(self):
+        coordinator = PasteCoordinator(lambda: object())
+        coordinator.reset("session-a")
+        coordinator.observe_peer_offer("files", 1, "session-a")
+        coordinator.on_key_press("ctrl")
+        coordinator.on_key_press("v")
+        self.assertIsNotNone(coordinator.pending_paste)
+        client = DeskFlowClient.__new__(DeskFlowClient)
+        client.paste_coordinator = coordinator
+
+        client._on_internal_transfer_status(
+            SimpleNamespace(is_terminal=False)
+        )
+        self.assertIsNotNone(coordinator.pending_paste)
+
+        client._on_internal_transfer_status(
+            SimpleNamespace(is_terminal=True)
+        )
+        self.assertIsNone(coordinator.pending_paste)
 
     def test_server_ignores_edge_crossing_while_local_paste_is_pending(self):
         events = []

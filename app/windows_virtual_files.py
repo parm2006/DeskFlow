@@ -24,6 +24,23 @@ FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 FILE_GROUP_DESCRIPTOR_FORMAT = "FileGroupDescriptorW"
 FILE_CONTENTS_FORMAT = "FileContents"
+STREAM_COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _copy_stream_bounded(source, destination, count):
+    remaining = max(0, int(count))
+    bytes_read = 0
+    bytes_written = 0
+    while remaining:
+        data = source.Read(min(remaining, STREAM_COPY_CHUNK_SIZE))
+        if not data:
+            break
+        destination.Write(data)
+        transferred = len(data)
+        bytes_read += transferred
+        bytes_written += transferred
+        remaining -= transferred
+    return bytes_read, bytes_written
 
 
 @dataclass(frozen=True)
@@ -180,7 +197,17 @@ class VirtualFileDataObject:
             and medium_type & pythoncom.TYMED_HGLOBAL
         ):
             if self.on_performed_drop is not None:
-                self.on_performed_drop()
+                try:
+                    value = bytes(medium.data)
+                    if len(value) < 4 or any(value[4:]):
+                        raise ValueError
+                    effect = struct.unpack("<I", value[:4])[0]
+                except (AttributeError, TypeError, ValueError):
+                    raise COMException(
+                        description="Performed DropEffect is invalid",
+                        scode=winerror.DV_E_FORMATETC,
+                    ) from None
+                self.on_performed_drop(effect)
             return None
         raise COMException(description="SetData is not supported", scode=winerror.E_NOTIMPL)
 
@@ -270,9 +297,7 @@ class FileBackedStream:
         raise COMException(description="stream is read-only", scode=winerror.STG_E_ACCESSDENIED)
 
     def CopyTo(self, stream, count):
-        data = self.Read(count)
-        stream.Write(data)
-        return len(data), len(data)
+        return _copy_stream_bounded(self, stream, count)
 
     def Commit(self, flags):
         return None
@@ -367,9 +392,7 @@ class CallbackStream:
         raise COMException(description="stream is read-only", scode=winerror.STG_E_ACCESSDENIED)
 
     def CopyTo(self, stream, count):
-        data = self.Read(count)
-        stream.Write(data)
-        return len(data), len(data)
+        return _copy_stream_bounded(self, stream, count)
 
     def Commit(self, flags):
         return None

@@ -14,12 +14,15 @@ class ClipboardHandler:
         self,
         on_clipboard_change,
         on_file_availability=None,
+        on_clipboard_offer=None,
         clipboard_adapter=None,
     ):
         self.on_clipboard_change = on_clipboard_change
         self.on_file_availability = on_file_availability
+        self.on_clipboard_offer = on_clipboard_offer
         self.clipboard_adapter = clipboard_adapter or WindowsClipboardAdapter()
         self.file_availability = None
+        self.offer_revision = 0
         self._file_drop_format = win32clipboard.CF_HDROP
         self.last_sequence_num = 0
         self.is_running = False
@@ -30,11 +33,15 @@ class ClipboardHandler:
 
     def start(self):
         self.is_running = True
+        self.offer_revision = 0
         try:
             self.last_sequence_num = win32clipboard.GetClipboardSequenceNumber()
         except:
             pass
-        self._update_file_availability()
+        if self._update_file_availability():
+            self._emit_offer(
+                "files" if self.file_availability else "ordinary"
+            )
         self.thread = threading.Thread(target=self._poll_clipboard, daemon=True)
         self.thread.start()
         logger.info("Rich Clipboard polling started (Native Zlib Compression)")
@@ -153,12 +160,27 @@ class ClipboardHandler:
                 win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP)
             )
         except Exception:
-            available = False
+            return False
         if available == self.file_availability:
-            return
+            return True
         self.file_availability = available
         if self.on_file_availability:
             self.on_file_availability(available)
+        return True
+
+    def _emit_offer(self, kind):
+        self.offer_revision += 1
+        if self.on_clipboard_offer:
+            self.on_clipboard_offer(kind, self.offer_revision)
+
+    def refresh_offer_if_changed(self):
+        try:
+            sequence = win32clipboard.GetClipboardSequenceNumber()
+        except Exception:
+            return False
+        if sequence == self.last_sequence_num:
+            return False
+        return self._process_clipboard_sequence(sequence)
 
     def read_file_selection(self):
         win32clipboard.OpenClipboard()
@@ -185,11 +207,21 @@ class ClipboardHandler:
 
     def _process_clipboard_sequence(self, sequence):
         if sequence == self.last_sequence_num:
-            return
+            return False
+        try:
+            files_available = bool(
+                win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP)
+            )
+        except Exception:
+            return False
         self.last_sequence_num = sequence
-        self._update_file_availability()
-        if self.file_availability:
-            return
+        availability_changed = files_available != self.file_availability
+        self.file_availability = files_available
+        if availability_changed and self.on_file_availability:
+            self.on_file_availability(files_available)
+        self._emit_offer("files" if files_available else "ordinary")
+        if files_available:
+            return True
         snapshot = self._read_clipboard()
         if snapshot:
             captured_fp = snapshot.fingerprint()
@@ -199,6 +231,7 @@ class ClipboardHandler:
                     captured_fp[:8],
                 )
                 self.last_injected_fingerprint = None  # Single-use suppression clearing
-                return
+                return True
             logger.info("Local rich clipboard change detected, forwarding...")
             self.on_clipboard_change(snapshot)
+        return True
